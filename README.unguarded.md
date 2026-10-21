@@ -156,9 +156,11 @@ opencode-unguarded uninstall          # keeps sessions, config, and credentials
 ~/.local/opt/opencode-unguarded/uninstall.sh
 ```
 
-`uninstall.sh` removes the program and the `opencode-unguarded` command link,
-keeps profile data by default, and never touches the stock `opencode` command or
-stock application storage. Use `--purge-profile` to remove the profile too.
+`uninstall.sh` stops the service belonging to the requested installation, removes
+the program and the `opencode-unguarded` command link, and keeps profile data. It
+never touches the stock `opencode` command, stock application storage, or another
+installation. There is no profile-purge flag; remove the profile yourself if you
+want it gone.
 
 ## Verification
 
