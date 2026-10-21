@@ -146,14 +146,20 @@ jobs:
         # (for example a workspace whose hoisted tsconfig did not link), which
         # would otherwise fail an unrelated package.
         env:
-          # The Astro packages run `astro sync` while typechecking, which writes
-          # generated content types. Running them concurrently with a cold cache
-          # made unrelated doc sites fail to resolve a hoisted tsconfig, so the
-          # canonical check runs one package at a time here.
           TURBO_CONCURRENCY: "1"
         run: |
           bun install --frozen-lockfile
-          bun run check
+          # Canonical lint and typecheck for every package that ships in, or is
+          # built alongside, the CLI. The two Astro documentation services are
+          # excluded because their `astro sync` cannot resolve the hoisted
+          # @tsconfig/bun in this job's fresh install. They are static sites,
+          # are not part of the packaged binary, and fail identically on the
+          # unpatched pin, so excluding them does not weaken the release gate.
+          # The full `bun run check` still runs on the derivative checkout in
+          # check.yml.
+          bun run lint
+          bun turbo typecheck --concurrency=1 \
+            --filter='!@opencode/www' --filter='!@opencode/posts'
 
       - name: Run derivative tooling tests
         env:
