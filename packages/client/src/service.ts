@@ -19,6 +19,12 @@ export type DiscoverOptions = {
   readonly file?: string
   /** Required exact service version or compatibility predicate. */
   readonly version?: string | ((version: string) => boolean)
+  /**
+   * Installation the caller expects to own the service. A derivative build
+   * refuses a registration whose installation differs, so two installations
+   * sharing a profile never reuse or stop each other's daemon.
+   */
+  readonly installation?: string
 }
 
 /** Reason ensuring the service requires a new process. */
@@ -40,6 +46,8 @@ export type StopOptions = {
   readonly file?: string
   /** How to handle persistent terminals before stopping the service. */
   readonly pty?: "clear" | "handoff"
+  /** Installation the caller expects to own the service. */
+  readonly installation?: string
 }
 
 /** Contents of the local service registration file. */

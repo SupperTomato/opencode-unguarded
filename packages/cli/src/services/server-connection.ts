@@ -65,6 +65,8 @@ function managedService(options: EnsureOptions) {
 export const shutdownPersistentPty = Effect.fn("cli.server-connection.shutdown-persistent-pty")(function* (
   options: EnsureOptions,
 ) {
+  // Discovery already requires a verified owner from this installation, so this
+  // never reaches a foreign or unverifiable daemon's terminals.
   const endpoint = yield* Service.discover({ ...options, version: undefined })
   if (!endpoint) return
   const client = OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) })

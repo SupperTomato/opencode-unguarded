@@ -72,6 +72,9 @@ exercise() {
   local home="$work/$name-home"
   local project="$work/$name-project"
   mkdir -p "$profile/data" "$profile/config/opencode" "$profile/cache" "$profile/state" "$profile/tmp" "$home" "$project"
+  # The stub model asks for this exact file. A session that never executes the
+  # read tool cannot report its contents.
+  printf 'harness tool output\n' > "$project/harness-target.txt"
 
   # General and signal-specific endpoints: an exporter activated through either
   # environment path must be observable.
@@ -159,14 +162,16 @@ JSON
   # execution and tool handling run. `run` uses the configured local model and
   # fails loudly if the session cannot complete.
   (cd "$project" && env "${env[@]}" "$binary" run --standalone --auto --model harness/stub \
-    "Reply with the single word ok." >"$work/$name.session.log" 2>&1) ||
+    "Read harness-target.txt with the read tool." >"$work/$name.session.log" 2>&1) ||
     {
       echo "$name session failed" >&2
       cat "$work/$name.session.log" >&2
       exit 1
     }
-  if ! grep -qi "ok" "$work/$name.session.log"; then
-    echo "$name session produced no assistant answer" >&2
+  # The stub only returns this text after it receives the tool result, so this
+  # assertion proves model tool execution happened, not just a text reply.
+  if ! grep -q "harness tool output" "$work/$name.session.log"; then
+    echo "$name session did not execute the read tool" >&2
     cat "$work/$name.session.log" >&2
     exit 1
   fi

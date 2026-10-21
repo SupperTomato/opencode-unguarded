@@ -1,4 +1,4 @@
-# OpenCode Unguarded v2.1.2 (revision 5)
+# OpenCode Unguarded v2.1.2 (revision 6)
 
 Derivative of OpenCode with built-in model-prompt guardrails removed and outbound
 telemetry integrations disabled at build time.
@@ -29,21 +29,28 @@ telemetry integrations disabled at build time.
 
 - Build identity, installation identity, and process-lifetime identity are
   separate and all compiled or recorded locally, never environment-controlled.
+- Discovery, reuse, and stopping require the *caller's* installation identity.
+  Two installations sharing a profile can no longer adopt or stop each other's
+  service; the registration and endpoint agreeing with each other is not proof.
+- An inherited installation root is only honored when the running executable
+  really lives there, and saved service configuration cannot supply it.
 - Live discovery and termination require a verified owner: a 404, an
   unauthenticated response, a mismatched PID, another derivative revision, or
   another installation all refuse instead of signalling anything.
 - A provably exited owner's stale registration is cleared without signalling a
   reused PID.
 - Uninstall proves the running executable belongs to the installation it removes,
-  binds the service to that installation, aborts if the service will not stop,
-  and keeps profile data.
+  verifies its recorded hash, binds the service to that installation, aborts if
+  the service will not stop, and keeps profile data. A registration it accepts is
+  one the client can actually read, so a malformed record cannot skip shutdown.
+  Foreign, legacy, and malformed registrations are refusals, not warnings.
 - The installer requires a checksum entry for the exact archive, mandatory
   executable and launcher hashes, preflights the command directory and link,
   and rolls back every post-activation failure.
 - `--dry-run` writes nothing: no directory, log, lock, migration, or registration
-  change, and no service is stopped.
-- Direct `libexec/opencode` execution applies the same profile and database
-  containment as the launcher.
+  change, no service is stopped, and a profile that does not exist stays absent.
+- Direct `libexec/opencode` execution applies the same profile, inherited-config,
+  nested-directory, and database containment as the launcher.
 - Patch application verifies real Git commit objects and refuses a synthesized
   HEAD or an archive that cannot prove the full tree.
 
@@ -55,7 +62,7 @@ telemetry integrations disabled at build time.
   neither stock nor another derivative revision is adopted.
 - `uninstall` removes only the verified derivative installation and keeps profile
   data.
-- `--version` reports `v2.1.2-unguarded.5`.
+- `--version` reports `v2.1.2-unguarded.6`.
 
 ## Preserved
 
@@ -85,6 +92,9 @@ training, and user-installed plugins are unaffected.
   session cannot complete.
 - The extracted release archive is installed into a disposable HOME, verified,
   used for a real session, and uninstalled, including while its service runs.
+- The release workflow runs the canonical `bun run check` on the patched source,
+  the upstream client lifecycle suites for both clients, and packaged acceptance
+  against exactly the packaged bytes.
 
 ## Install
 

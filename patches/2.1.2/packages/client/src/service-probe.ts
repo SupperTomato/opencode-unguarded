@@ -84,6 +84,14 @@ export function decide(service: LocalService, options: DiscoverOptions) {
       "The registered background service belongs to a different OpenCode build (distribution or derivative revision). " +
         "Stop it, then start this build.",
     )
+  // A registration and its endpoint agreeing with each other says nothing about
+  // the caller: two installations of the same build share an identity format.
+  // The caller must be the installation the service belongs to.
+  if (!ownedByCaller(service.info.installation, options.installation))
+    return fail(
+      "The registered background service belongs to a different installation. " +
+        "Use that installation, or stop this service before switching.",
+    )
   // An endpoint that cannot prove which build and installation it serves must
   // never be replaced automatically: replacing means stopping what the
   // registration names, and that may not be the process answering.
@@ -101,6 +109,19 @@ export function decide(service: LocalService, options: DiscoverOptions) {
   if (service.state === "ready") return { _tag: "reuse" } as const
   if (service.state === "failed") return fail("Background service failed to start")
   return { _tag: "wait" } as const
+}
+
+/**
+ * Whether this caller may operate on a service owned by `owner`.
+ *
+ * Stock builds have no installation identity and keep upstream behavior. A
+ * derivative caller must be running from the installation being operated on;
+ * without an expected installation it cannot prove that, so it refuses.
+ */
+export function ownedByCaller(owner: string | undefined, expected: string | undefined) {
+  if (!DERIVATIVE) return true
+  if (expected === undefined) return false
+  return owner !== undefined && owner === expected
 }
 
 function fail(message: string) {
@@ -173,7 +194,11 @@ export type ProbeFailure =
   | "lifecycle-mismatch"
 
 /** Ask a registered owner for its health and prove its identity. */
-export async function probeResult(info: Info, timeout = defaultEnsureTiming.requestTimeout): Promise<ProbeOutcome> {
+export async function probeResult(
+  info: Info,
+  timeout = defaultEnsureTiming.requestTimeout,
+  expected?: { readonly installation?: string },
+): Promise<ProbeOutcome> {
   const endpoint = {
     url: info.url,
     auth: info.password === undefined ? undefined : { type: "basic", username: "opencode", password: info.password },
@@ -216,6 +241,13 @@ export async function probeResult(info: Info, timeout = defaultEnsureTiming.requ
     return { status: "incompatible", reason: "version-mismatch", timedOut: false }
   const mismatch = identityMismatch(info, serverInfo)
   if (mismatch !== undefined) return { status: "unverified", reason: mismatch, timedOut: false }
+  if (!ownedByCaller(info.installation, expected?.installation))
+    return { status: "unverified", reason: "installation-mismatch", timedOut: false }
+  // The registration must describe the same process lifetime as the endpoint.
+  // Without this, a registration left from a previous process can name a PID
+  // that now belongs to something else.
+  if (info.startTime !== undefined && serverInfo.startTime !== info.startTime)
+    return { status: "unverified", reason: "lifecycle-mismatch", timedOut: false }
   return {
     status: "verified",
     timedOut: false,
@@ -242,7 +274,10 @@ export function ownerExited(info: { readonly pid: number; readonly startTime?: s
   if (!processAlive(info.pid)) return true
   if (info.startTime === undefined) return false
   const current = processStartTime(info.pid)
-  return current === undefined || current !== info.startTime
+  // Unreadable metadata is not proof of exit: the process is alive, so only a
+  // known, different start time proves this is a different process.
+  if (current === undefined) return false
+  return current !== info.startTime
 }
 
 function processAlive(pid: number) {

@@ -83,6 +83,11 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
           ? Service.incumbent({ ...serviceOptions, url: serviceURL(hostname, port) })
           : undefined
       if (findIncumbent !== undefined && (yield* findIncumbent) !== undefined) return
+      // Capture identity from the process environment the launcher set, before
+      // saved service configuration can contribute to it. installationIdentity
+      // also verifies the running executable lives in the claimed root.
+      const installation = UNGUARDED ? Installation.installationIdentity() : undefined
+      const startTime = UNGUARDED ? ProcessIdentity.processStartTime() : undefined
       // Desktop can launch the service directly without injecting its saved environment.
       Object.assign(process.env, config.env)
       // Keep a package-manager or curl install replaceable while the service runs; Desktop updates its own copy.
@@ -106,8 +111,6 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
       // opencode-unguarded: a managed service advertises the build and
       // installation that owns it. Stock builds leave these unset, and clients
       // treat their absence as unproven ownership.
-      const installation = UNGUARDED ? Installation.installationIdentity() : undefined
-      const startTime = UNGUARDED ? ProcessIdentity.processStartTime() : undefined
       const derivative =
         installation === undefined
           ? {}

@@ -65,6 +65,13 @@ case "$profile_real" in
   "$prefix_real"|"$prefix_real/"*)
     die "refusing an installation root containing the application profile: $profile_real" ;;
 esac
+# The reverse direction is equally unsafe: an installation inside the profile is
+# data the uninstaller would refuse to remove, and it would mix program files
+# into durable user storage.
+case "$prefix_real" in
+  "$profile_real"|"$profile_real/"*)
+    die "refusing an installation root inside the application profile: $prefix_real" ;;
+esac
 
 # An existing installation is only replaceable when it is actually ours. Refuse
 # to rename an unrelated directory out of the way.

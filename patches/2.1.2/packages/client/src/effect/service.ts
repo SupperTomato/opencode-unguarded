@@ -14,6 +14,7 @@ import {
   ownerExited,
   probeResult,
   same,
+  type LocalService,
 } from "../service-probe.js"
 
 export * from "../service.js"
@@ -47,7 +48,7 @@ export const incumbent = Effect.fn("service.incumbent")(function* (
 ) {
   const info = yield* read(options.file)
   if (info === undefined) return undefined
-  const found = (yield* Effect.promise(() => probeResult({ ...info, url: options.url }))).service
+  const found = (yield* Effect.promise(() => probeResult({ ...info, url: options.url }, undefined, options))).service
   if (!found?.compatible) return undefined
   if (!ownedByThisBuild(found.info)) return undefined
   if (!matchesVersion(found.version, options)) return undefined
@@ -81,7 +82,7 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
     })
   })
   const found = yield* Effect.gen(function* () {
-    const registration = yield* registered(options.file, timing.requestTimeout)
+    const registration = yield* registered(options.file, timing.requestTimeout, options.installation)
     const info = registration.info
     const service = registration.service
     if (registration.timedOut && info !== undefined) {
@@ -152,25 +153,33 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
 /** Stop the registered local service. */
 export const stop = Effect.fn("service.stop")(function* (options: StopOptions = {}) {
   const info = yield* read(options.file)
-  // A derivative build refuses to prepare handoff state for an owner it cannot
-  // verify, so an unrelated process is never touched.
-  if (isDerivative() && info !== undefined && options.pty === "handoff")
-    yield* requireVerifiedOwner(info, options, defaultEnsureTiming.requestTimeout)
+  // A derivative build proves ownership before it touches anything, including
+  // persistent terminals: an unrelated process must never lose terminal state.
+  const verified = isDerivative() && info !== undefined
+    ? yield* requireVerifiedOwner(info, options, defaultEnsureTiming.requestTimeout)
+    : undefined
   // Terminal handoff is best-effort; it must never keep the old service running.
+  // A provably exited owner has nothing to clear, and clearing its registration
+  // is the only remaining step.
+  if (verified === "exited") {
+    if (info !== undefined) yield* terminate(info, options, ensureTiming(options))
+    return
+  }
   yield* Effect.tryPromise(() =>
     options.pty === "handoff" && info !== undefined
       ? PtyHandoff.prepare(options.file ?? fallback(), info, defaultEnsureTiming.requestTimeout)
       : PtyHandoff.clear(options.file ?? fallback()),
   ).pipe(Effect.catch((cause) => Effect.logWarning("Failed to prepare persistent terminals for replacement", cause)))
-  if (info !== undefined) yield* terminate(info, options, ensureTiming(options))
+  if (info !== undefined) yield* terminate(info, options, ensureTiming(options), verified)
 })
 
 const requireVerifiedOwner = Effect.fnUntraced(function* (
   info: Info,
-  options: { readonly file?: string },
+  options: StopOptions,
   timeout: number,
 ) {
-  const probe = yield* Effect.promise(() => probeResult(info, timeout))
+  if (ownerExited(info)) return "exited" as const
+  const probe = yield* Effect.promise(() => probeResult(info, timeout, options))
   if (probe.status !== "verified" || probe.service === undefined)
     return yield* Effect.fail(
       new Error(
@@ -179,6 +188,7 @@ const requireVerifiedOwner = Effect.fnUntraced(function* (
           `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
       ),
     )
+  return probe.service
 })
 
 /** Schema for the local service registration file. */
@@ -204,10 +214,10 @@ const read = Effect.fnUntraced(function* (file?: string) {
   return yield* decode(text.value).pipe(Effect.option, Effect.map(Option.getOrUndefined))
 })
 
-const registered = Effect.fnUntraced(function* (file?: string, timeout?: number) {
+const registered = Effect.fnUntraced(function* (file?: string, timeout?: number, installation?: string) {
   const info = yield* read(file)
   if (info === undefined) return { info: undefined, service: undefined, timedOut: false }
-  return { info, ...(yield* Effect.promise(() => probeResult(info, timeout))) }
+  return { info, ...(yield* Effect.promise(() => probeResult(info, timeout, { installation }))) }
 })
 
 // 50ms cadence bounded at ~5s, shared by stop escalation and each ensure
@@ -226,7 +236,12 @@ const stopped = Effect.fnUntraced(function* (pid: number) {
   return yield* Effect.fail(new Error(`Server process ${pid} is still running`))
 })
 
-const terminate = Effect.fnUntraced(function* (info: Info, options: { readonly file?: string }, timing: EnsureTiming) {
+const terminate = Effect.fnUntraced(function* (
+  info: Info,
+  options: StopOptions,
+  timing: EnsureTiming,
+  alreadyVerified?: LocalService,
+) {
   const current = yield* read(options.file)
   if (current === undefined || !same(current, info)) return
   // opencode-unguarded never signals a PID that is not proven to be this
@@ -246,21 +261,12 @@ const terminate = Effect.fnUntraced(function* (info: Info, options: { readonly f
       }
       return
     }
-    const probe = yield* Effect.promise(() => probeResult(info, timing.requestTimeout))
-    if (probe.status !== "verified" || probe.service === undefined)
+    const verified = alreadyVerified ?? (yield* Effect.promise(() => probeResult(info, timing.requestTimeout, options))).service
+    if (verified === undefined)
       return yield* Effect.fail(
         new Error(
-          `refusing to stop service pid ${info.pid}: the registered endpoint did not prove it is this owner` +
-            `${probe.reason === undefined ? "" : ` (${probe.reason})`}. ` +
+          `refusing to stop service pid ${info.pid}: the registered endpoint did not prove it is this owner. ` +
             `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
-        ),
-      )
-    // A PID can be reused between the registration and this moment. When the
-    // owner reports a start time, require the registration to agree.
-    if (info.startTime !== undefined && probe.service.startTime !== info.startTime)
-      return yield* Effect.fail(
-        new Error(
-          `refusing to stop service pid ${info.pid}: its process start time no longer matches the registration.`,
         ),
       )
   }

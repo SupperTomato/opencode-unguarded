@@ -23,6 +23,13 @@ const DEFAULT_PROFILE = path.join(home, ".local", "share", "opencode-unguarded",
  * means invoking `libexec/opencode` directly cannot bypass it.
  */
 function derivativeProfile() {
+  // These would redirect configuration or home state outside the profile. A
+  // launcher rejects them too; refusing here means a direct invocation cannot
+  // bypass that policy.
+  for (const name of ["OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_TEST_HOME"]) {
+    if ((process.env[name] ?? "").length > 0)
+      throw new Error(`opencode-unguarded: refusing inherited ${name}; unset it and configure the profile instead`)
+  }
   const raw = process.env.OPENCODE_UNGUARDED_PROFILE
   if (raw === undefined || raw.length === 0) return DEFAULT_PROFILE
   if (!path.isAbsolute(raw))
@@ -47,7 +54,41 @@ function derivativeProfile() {
         )
     }
   }
+  // The runtime appends `opencode` below each root. A symlink there would still
+  // escape the profile even though the root itself is contained, so validate
+  // the application directory too. A missing directory is fine: it is created
+  // later, inside the profile.
+  for (const base of ["data", "config", "cache", "state", "tmp"]) {
+    const appdir = path.join(resolved, base, "opencode")
+    if (!fs.existsSync(appdir)) continue
+    if (fs.lstatSync(appdir).isSymbolicLink())
+      throw new Error(`opencode-unguarded: refusing symlinked application directory: ${appdir}`)
+    const canonicalApp = fs.realpathSync.native(appdir)
+    if (canonicalApp !== appdir)
+      throw new Error(`opencode-unguarded: refusing an application directory that resolves elsewhere: ${canonicalApp}`)
+  }
   return resolved
+}
+
+/**
+ * Resolve the derivative database inside the profile data directory.
+ *
+ * Overrides are plain filenames; the launcher has the same rule. A symlink at
+ * the target would redirect SQLite writes outside the profile, so it is refused
+ * for the default filename as well as an override.
+ */
+export function derivativeDatabasePath(data: string) {
+  const override = process.env.OPENCODE_DB
+  const name = override === undefined || override.length === 0 ? "opencode-unguarded.db" : override
+  if (name === ":memory:") return name
+  if (path.isAbsolute(name)) throw new Error("opencode-unguarded: OPENCODE_DB must be a filename, not an absolute path")
+  if (name.split(/[\\/]/).includes("..")) throw new Error("opencode-unguarded: OPENCODE_DB must not contain '..'")
+  if (name.includes("/") || name.includes("\\"))
+    throw new Error("opencode-unguarded: OPENCODE_DB must be a plain filename inside the profile")
+  const target = path.join(data, name)
+  if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink())
+    throw new Error(`opencode-unguarded: refusing a symlinked database: ${target}`)
+  return target
 }
 
 /**

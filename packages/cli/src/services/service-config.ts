@@ -7,6 +7,7 @@ import { randomBytes } from "crypto"
 import path from "path"
 import { selfCommand } from "../util/process"
 import { RemoteTunnel } from "./remote-tunnel"
+import { Installation } from "./installation"
 
 // The CLI's service configuration file, plus the Service.EnsureOptions binding that
 // points the client package's service operations at this CLI: which
@@ -160,6 +161,9 @@ export const options = Effect.fnUntraced(function* (input: { readonly checkVersi
   return {
     file,
     version: input.checkVersion ? OPENCODE_VERSION : undefined,
+    // opencode-unguarded: the caller's own installation identity, so discovery,
+    // reuse, and stopping are bound to the installation running this client.
+    ...(UNGUARDED ? { installation: Installation.installationIdentity().id } : {}),
     env: (yield* read()).env,
     command: [
       ...selfCommand(),

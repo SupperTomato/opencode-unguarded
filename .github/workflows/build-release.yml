@@ -138,15 +138,11 @@ jobs:
             fi
           done
 
-      - name: Typecheck patched packages
+      - name: Canonical repository check
         working-directory: opencode-src
-        run: |
-          bun run --cwd packages/util typecheck
-          bun run --cwd packages/core typecheck
-          bun run --cwd packages/client typecheck
-          bun run --cwd packages/cli typecheck
-          bun run --cwd packages/app typecheck
-          bun run --cwd packages/desktop typecheck
+        # The release source is the tree that becomes the binary, so it gets the
+        # same canonical lint and typecheck the repository requires.
+        run: bun run check
 
       - name: Run derivative tooling tests
         env:
@@ -183,7 +179,8 @@ jobs:
 
       - name: Run affected client suites
         working-directory: opencode-src/packages/client
-        run: bun test test/unguarded-ownership.test.ts test/unguarded-termination.test.ts
+        # Both production clients and the upstream lifecycle suites they changed.
+        run: bun test --timeout 30000 test/service.test.ts test/promise-service.test.ts test/service-reconnect.test.ts test/service-decision.test.ts test/unguarded-ownership.test.ts test/unguarded-termination.test.ts
 
       - name: Run affected util derivatives
         working-directory: opencode-src/packages/util
@@ -285,7 +282,8 @@ jobs:
           rm -rf "$ACCEPT"
           mkdir -p "$ACCEPT"
           tar xzf opencode-unguarded-linux-x64.tar.gz -C "$ACCEPT"
-          cp packaging/linux-x64/model-stub.ts "$ACCEPT/opencode-unguarded/model-stub.ts"
+          # No files are copied into the extracted tree: acceptance must pass on
+          # exactly the packaged bytes.
           bash "$ACCEPT/opencode-unguarded/acceptance.sh" "$ACCEPT/opencode-unguarded" "$PWD/opencode-unguarded-linux-x64.tar.gz"
 
       - name: Upload artifact

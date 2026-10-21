@@ -14,6 +14,7 @@ import {
   ownerExited,
   probeResult,
   same,
+  type LocalService,
 } from "../service-probe.js"
 
 export * from "../service.js"
@@ -27,7 +28,7 @@ export { headers }
 
 /** Discover a healthy, compatible local service without starting one. */
 export async function discover(options: DiscoverOptions = {}) {
-  const found = (await registered(options.file)).service
+  const found = (await registered(options.file, undefined, options.installation)).service
   if (found?.state !== "ready") return undefined
   if (!ownedByThisBuild(found.info)) return undefined
   if (!found.compatible) return undefined
@@ -62,7 +63,7 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
     while (true) {
       if (Date.now() >= deadline)
         throw pool.failure() ?? new Error("Timed out waiting for the background service to start")
-      const registration = await registered(options.file, timing.requestTimeout)
+      const registration = await registered(options.file, timing.requestTimeout, options.installation)
       if (registration.timedOut && registration.info !== undefined) {
         timeouts = {
           info: registration.info,
@@ -120,25 +121,32 @@ export async function stop(options: StopOptions = {}) {
   // Terminal handoff is best-effort; it must never keep the old service running.
   // A derivative build also refuses to prepare handoff state for an owner it
   // cannot verify, so an unrelated process is never touched.
-  if (isDerivative() && info !== undefined && options.pty === "handoff") {
-    await requireVerifiedOwner(info, options, defaultEnsureTiming.requestTimeout)
+  // Ownership is proven before any terminal side effect, and before any signal.
+  const verified = isDerivative() && info !== undefined
+    ? await requireVerifiedOwner(info, options, defaultEnsureTiming.requestTimeout)
+    : undefined
+  if (verified === "exited") {
+    if (info !== undefined) await terminate(info, options, ensureTiming(options))
+    return
   }
   await (
     options.pty === "handoff" && info !== undefined
       ? PtyHandoff.prepare(options.file ?? fallback(), info, defaultEnsureTiming.requestTimeout)
       : PtyHandoff.clear(options.file ?? fallback())
   ).catch((cause: unknown) => console.warn("Failed to prepare persistent terminals for replacement", cause))
-  if (info !== undefined) await terminate(info, options, ensureTiming(options))
+  if (info !== undefined) await terminate(info, options, ensureTiming(options), verified)
 }
 
-async function requireVerifiedOwner(info: Info, options: { readonly file?: string }, timeout: number) {
-  const probe = await probeResult(info, timeout)
+async function requireVerifiedOwner(info: Info, options: StopOptions, timeout: number) {
+  if (ownerExited(info)) return "exited" as const
+  const probe = await probeResult(info, timeout, options)
   if (probe.status !== "verified" || probe.service === undefined)
     throw new Error(
       `refusing to stop service pid ${info.pid}: the registered endpoint did not prove it is this owner` +
         `${probe.reason === undefined ? "" : ` (${probe.reason})`}. ` +
         `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
     )
+  return probe.service
 }
 
 function ownershipError(outcome: { readonly reason?: string }) {
@@ -158,10 +166,10 @@ async function read(file?: string) {
   }
 }
 
-async function registered(file?: string, timeout?: number) {
+async function registered(file?: string, timeout?: number, installation?: string) {
   const info = await read(file)
   if (info === undefined) return { info: undefined, service: undefined, timedOut: false }
-  return { info, ...(await probeResult(info, timeout)) }
+  return { info, ...(await probeResult(info, timeout, { installation })) }
 }
 
 function signal(pid: number, name: NodeJS.Signals) {
@@ -187,7 +195,12 @@ async function waitUntilStopped(pid: number, timing: EnsureTiming) {
   return false
 }
 
-async function terminate(info: Info, options: { readonly file?: string }, timing: EnsureTiming) {
+async function terminate(
+  info: Info,
+  options: StopOptions,
+  timing: EnsureTiming,
+  alreadyVerified?: LocalService,
+) {
   const current = await read(options.file)
   if (current === undefined || !same(current, info)) return
   // opencode-unguarded never signals a PID that is not proven to be this
@@ -201,18 +214,11 @@ async function terminate(info: Info, options: { readonly file?: string }, timing
       if (latest !== undefined && same(latest, info)) await rm(options.file ?? fallback(), { force: true })
       return
     }
-    const probe = await probeResult(info, timing.requestTimeout)
-    if (probe.status !== "verified" || probe.service === undefined)
+    const verified = alreadyVerified ?? (await probeResult(info, timing.requestTimeout, options)).service
+    if (verified === undefined)
       throw new Error(
-        `refusing to stop service pid ${info.pid}: the registered endpoint did not prove it is this owner` +
-          `${probe.reason === undefined ? "" : ` (${probe.reason})`}. ` +
+        `refusing to stop service pid ${info.pid}: the registered endpoint did not prove it is this owner. ` +
           `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
-      )
-    // When the owner reports a start time, require the registration to agree so
-    // a reused PID is never signalled.
-    if (info.startTime !== undefined && probe.service.startTime !== info.startTime)
-      throw new Error(
-        `refusing to stop service pid ${info.pid}: its process start time no longer matches the registration.`,
       )
   }
   signal(info.pid, "SIGTERM")

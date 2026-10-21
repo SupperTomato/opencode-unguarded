@@ -22,10 +22,11 @@ archive="$(cd -P -- "$(dirname -- "$archive_arg")" && pwd)/$(basename -- "$archi
 script_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="$(mktemp -d)"
 cleanup() {
-  if [ -n "${server:-}" ]; then
-    kill "$server" 2>/dev/null || true
-    wait "$server" 2>/dev/null || true
-  fi
+  for pid in "${server:-}" "${model:-}"; do
+    [ -n "$pid" ] || continue
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -73,13 +74,26 @@ pass "database overrides behave as documented"
 
 # --- dry run is read-only -----------------------------------------------------
 pass "checking that uninstall --dry-run changes nothing"
-mkdir -p "$HOME/.local/share/opencode-unguarded/profile/data/opencode"
-echo durable >"$HOME/.local/share/opencode-unguarded/profile/data/opencode/durable.txt"
-snapshot() { find "$HOME/.local/share/opencode-unguarded/profile" -type f -exec sha256sum {} + | sort; }
-before="$(snapshot)"
+profile="$HOME/.local/share/opencode-unguarded/profile"
+mkdir -p "$profile/data/opencode"
+echo durable >"$profile/data/opencode/durable.txt"
+# Snapshot paths, types, modes, link targets, and content, so a created empty
+# directory or a chmod cannot pass unnoticed.
+snapshot() {
+  find "$1" -mindepth 0 -printf '%p %y %m %l\n' 2>/dev/null | sort
+  find "$1" -type f -exec sha256sum {} + 2>/dev/null | sort
+}
+before="$(snapshot "$profile")"
 "$command" uninstall --dry-run >"$work/dry.log" 2>&1 || { cat "$work/dry.log" >&2; fail "dry run failed"; }
-[ "$before" = "$(snapshot)" ] || fail "dry run modified the profile"
+[ "$before" = "$(snapshot "$profile")" ] || fail "dry run modified the profile"
 pass "dry run left the profile unchanged"
+
+# A dry run must also not create a profile that does not exist yet.
+absent="$work/absent-profile"
+OPENCODE_UNGUARDED_PROFILE="$absent" "$command" uninstall --dry-run >"$work/dry2.log" 2>&1 ||
+  { cat "$work/dry2.log" >&2; fail "dry run with a missing profile failed"; }
+[ ! -e "$absent" ] || fail "dry run created a profile that did not exist"
+pass "dry run did not create a missing profile"
 
 # --- service identity ---------------------------------------------------------
 pass "starting the managed service"
@@ -123,12 +137,13 @@ jq -n --arg url "http://127.0.0.1:$model_port/v1" \
   '{providers:{harness:{package:"@opencode/ai/providers/openai-compatible",name:"Harness",
     settings:{baseURL:$url,apiKey:"harness"},models:{stub:{name:"Stub"}}}}}' \
   >"$HOME/.local/share/opencode-unguarded/profile/config/opencode/opencode.json"
+printf 'harness tool output\n' >"$work/project/harness-target.txt"
 (cd "$work/project" && OPENCODE_DISABLE_MODELS_FETCH=1 "$command" run --standalone --auto \
-  --model harness/stub "Reply with the single word ok." >"$work/session.log" 2>&1) ||
+  --model harness/stub "Read harness-target.txt with the read tool." >"$work/session.log" 2>&1) ||
   { cat "$work/session.log" >&2; fail "session did not complete"; }
-grep -qi "ok" "$work/session.log" || { cat "$work/session.log" >&2; fail "session produced no answer"; }
-kill "$model" 2>/dev/null || true
-pass "session completed with a packaged install"
+grep -q "harness tool output" "$work/session.log" ||
+  { cat "$work/session.log" >&2; fail "session did not execute the read tool"; }
+pass "session completed with a packaged install and a real tool call"
 
 # --- uninstall ----------------------------------------------------------------
 pass "uninstalling while the service is running"

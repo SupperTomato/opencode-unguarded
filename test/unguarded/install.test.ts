@@ -208,6 +208,18 @@ describe("candidate installation", () => {
     expect(fs.readFileSync(path.join(fixture.prefix, "libexec/opencode"), "utf8")).toBe("decoy")
   })
 
+  test("refuses an installation inside the profile", () => {
+    const fixture = makeArchive()
+    const profile = path.join(fixture.home, ".local/share/opencode-unguarded/profile")
+    const result = run(install, ["--archive", fixture.archive, "--prefix", path.join(profile, "program")], {
+      HOME: fixture.home,
+      OPENCODE_UNGUARDED_PROFILE: profile,
+    })
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("inside the application profile")
+    expect(fs.existsSync(path.join(profile, "program"))).toBe(false)
+  })
+
   test("refuses a command directory that is a regular file before replacing anything", () => {
     const fixture = makeArchive()
     expect(run(install, ["--archive", fixture.archive, "--prefix", fixture.prefix, "--no-link"], { HOME: fixture.home }).exitCode).toBe(0)

@@ -32,7 +32,7 @@ const IDENTITY = {
 }
 
 /** Probe a real local endpoint that answers with `body` and `status`. */
-const probe = (registration: object, body: object, status = 200) => `
+const probe = (registration: object, body: object, status = 200, caller = "installation-1") => `
 const { probeResult, decide, ownedByThisBuild, same } = await import(${JSON.stringify(
   path.join(import.meta.dir, "../src/service-probe.ts"),
 )})
@@ -42,12 +42,12 @@ const server = Bun.serve({
 })
 const info = { ...${JSON.stringify(registration)}, url: server.url.toString() }
 try {
-  const result = await probeResult(info, 2000)
+  const result = await probeResult(info, 2000, { installation: ${JSON.stringify(caller)} })
   console.log(JSON.stringify({
     owned: ownedByThisBuild(info),
     status: result.status,
     reason: result.reason ?? null,
-    decision: result.service ? decide(result.service, { version: "2.1.2" })._tag : null,
+    decision: result.service ? decide(result.service, { version: "2.1.2", installation: ${JSON.stringify(caller)} })._tag : null,
     same: result.service ? same(info, result.service.info) : null,
   }))
 } finally {
@@ -90,6 +90,31 @@ test("a registration without a revision cannot prove ownership", () => {
     ),
   )
   expect(JSON.parse(result.stdout)).toMatchObject({ owned: false, status: "unverified", reason: "build-mismatch" })
+})
+
+test("the caller's own installation is required, not just agreement", () => {
+  // Registration and endpoint agree on installation-1, but this caller is
+  // installation-2. Agreement between the two files proves nothing about who
+  // is asking, so the service must not be adopted or stopped.
+  const result = evaluate(probe(registration(), live(), 200, "installation-2"))
+  expect(JSON.parse(result.stdout)).toMatchObject({ status: "unverified", reason: "installation-mismatch" })
+})
+
+test("a caller that cannot name its installation is refused", () => {
+  const result = evaluate(`
+const { probeResult } = await import(${JSON.stringify(
+    path.join(import.meta.dir, "../src/service-probe.ts"),
+  )})
+const server = Bun.serve({ port: 0, fetch: () => Response.json(${JSON.stringify(live())}) })
+const info = { ...${JSON.stringify(registration())}, url: server.url.toString() }
+try {
+  const result = await probeResult(info, 2000)
+  console.log(JSON.stringify({ status: result.status, reason: result.reason ?? null }))
+} finally {
+  server.stop(true)
+}
+`)
+  expect(JSON.parse(result.stdout)).toMatchObject({ status: "unverified", reason: "installation-mismatch" })
 })
 
 test("a live owner from another installation is rejected", () => {

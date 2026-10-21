@@ -82,15 +82,15 @@ describe("lifecycle verification", () => {
   test("restoring the stock database selection is detected", () => {
     const root = fixture()
     rewrite(root, "packages/cli/src/database-path.ts", (content) =>
-      content.replace("if (UNGUARDED) return derivativeDatabase(data)", ""),
+      content.replace("if (UNGUARDED) return derivativeDatabasePath(data)", ""),
     )
     expect(verifyServiceOwnership(root).join("\n")).toMatch(/derivative database is not selected/)
   })
 
   test("dropping the :memory: override is detected", () => {
     const root = fixture()
-    rewrite(root, "packages/cli/src/database-path.ts", (content) =>
-      content.replace('if (override === ":memory:") return override', ""),
+    rewrite(root, "packages/util/src/global-roots.ts", (content) =>
+      content.replace('if (name === ":memory:") return name', ""),
     )
     expect(verifyServiceOwnership(root).join("\n")).toMatch(/:memory: override is not honored/)
   })

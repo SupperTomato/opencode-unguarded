@@ -3,6 +3,7 @@ import { Service } from "@opencode/client/effect/service"
 import { Global } from "@opencode/util/global"
 import { Effect, FileSystem, Option, Schedule, Schema } from "effect"
 import path from "node:path"
+import { createHash } from "node:crypto"
 import { UNGUARDED, UNGUARDED_IDENTITY } from "../../version"
 import { Commands } from "../commands"
 import { Runtime } from "../../framework/runtime"
@@ -201,8 +202,12 @@ const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (inp
 
   // An installation that contains the profile cannot be removed without
   // deleting durable data. Refuse before listing or stopping anything.
-  // global.data is <profile>/data/opencode.
-  const profileRoot = yield* fs.realPath(path.dirname(path.dirname(global.data)))
+  // global.data is <profile>/data/opencode. A profile that does not exist yet
+  // has no canonical path, and a dry run must not create it, so normalize
+  // lexically in that case.
+  const profilePath = path.dirname(path.dirname(global.data))
+  const canonicalProfile = yield* fs.realPath(profilePath).pipe(Effect.option)
+  const profileRoot = Option.getOrElse(canonicalProfile, () => path.resolve(profilePath))
   if (rootReal === profileRoot || rootReal.startsWith(profileRoot + path.sep) || profileRoot.startsWith(rootReal + path.sep))
     return yield* Effect.fail(
       new Error(
@@ -224,15 +229,23 @@ const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (inp
       ),
     )
   const owned = registered._tag === "valid" ? registered.info : undefined
-  const foreign = owned !== undefined && !registrationBelongsToInstallation(owned, ownership)
-  const stop = owned !== undefined && !foreign ? owned : undefined
+  // A registration that is not provably this installation's service may belong
+  // to a live process we must not delete the program out from under. Refuse and
+  // let the user resolve it; never proceed on a warning.
+  if (owned !== undefined && !registrationBelongsToInstallation(owned, ownership))
+    return yield* Effect.fail(
+      new Error(
+        `refusing to remove ${rootReal}: ${registration} belongs to another build, revision, or installation. ` +
+          `Stop that service, then uninstall.`,
+      ),
+    )
+  const stop = owned
   const command = yield* findCommandLink(fs, launcher, global.home)
 
   log.message("Sessions, credentials, configuration, and other profile data are kept.")
   log.info(`  Installation: ${rootReal}`)
   log.info(`  Service registration: ${registration}`)
   if (stop) log.info(`  Background service: pid ${stop.pid}`)
-  if (foreign) log.warn(`The registered service belongs to another build or installation and is left untouched.`)
 
   if (input.dryRun) {
     log.warn("Dry run - no changes made")
@@ -254,8 +267,11 @@ const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (inp
   const errors: string[] = []
   if (stop) {
     progress.start("Stopping the derivative service...")
-    yield* ServerConnection.shutdownPersistentPty({ file: registration }).pipe(Effect.ignore)
-    yield* Service.stop({ file: registration }).pipe(
+    yield* ServerConnection.shutdownPersistentPty({
+      file: registration,
+      installation: ownership.installationId,
+    }).pipe(Effect.ignore)
+    yield* Service.stop({ file: registration, installation: ownership.installationId }).pipe(
       Effect.tap(() => Effect.sync(() => progress.stop("Derivative service stopped"))),
       Effect.catch((error) =>
         Effect.sync(() => {
@@ -313,11 +329,22 @@ const verifyInstallationOwnership = (fs: FileSystem.FileSystem, root: string) =>
     const running = yield* fs.realPath(process.execPath).pipe(Effect.option)
     if (Option.isNone(installed) || Option.isNone(running))
       return `refusing to remove ${root}: its executable could not be resolved`
+    // The executable must resolve inside the root, not merely equal a symlink
+    // target elsewhere, and its bytes must match the recorded hash. Without
+    // both, an unrelated directory with a link to this binary would qualify.
+    if (!isInside(installed.value, root))
+      return `refusing to remove ${root}: its executable resolves outside the installation (${installed.value})`
     if (installed.value !== running.value)
       return (
         `refusing to remove ${root}: the running executable (${process.execPath}) is not the one installed there ` +
         `(${installed.value})`
       )
+    if (info.value.executableSha256 === undefined)
+      return `refusing to remove ${root}: BUILD-INFO.json does not record the executable hash`
+    const actual = yield* sha256File(fs, installed.value).pipe(Effect.option)
+    if (Option.isNone(actual)) return `refusing to remove ${root}: its executable could not be read`
+    if (actual.value !== info.value.executableSha256)
+      return `refusing to remove ${root}: its executable does not match BUILD-INFO.json`
     return {
       executable: installed.value,
       installationId: info.value.installationId,
@@ -329,6 +356,7 @@ const BuildInfo = Schema.Struct({
   derivative: Schema.optional(Schema.String),
   derivativeRevision: Schema.optional(Schema.String),
   installationId: Schema.optional(Schema.String),
+  executableSha256: Schema.optional(Schema.String),
 })
 
 /** Whether a registration describes a service owned by this installation. */
@@ -338,19 +366,24 @@ function registrationBelongsToInstallation(
 ) {
   if (registration.derivative !== UNGUARDED_IDENTITY.name) return false
   if (registration.derivativeRevision !== UNGUARDED_IDENTITY.revision) return false
-  // When the installation recorded an identifier, the service must carry the
-  // same one. A different installation sharing a profile never matches.
-  if (ownership.installationId !== undefined) return registration.installation === ownership.installationId
-  // Legacy installations predate the identifier; fall back to "some service of
-  // this revision", and only because ownership above already proved the binary.
-  return registration.installation === undefined
+  // The installation identifier is required: a registration that predates it
+  // cannot prove which installation owns the service, so it is refused rather
+  // than matched approximately.
+  if (ownership.installationId === undefined) return false
+  return registration.installation === ownership.installationId
 }
 
+// Must match what the client reads, so a registration this handler accepts is
+// never one Service.stop would treat as absent.
 const Registration = Schema.Struct({
+  id: Schema.optional(Schema.String),
+  version: Schema.optional(Schema.String),
   pid: Schema.Int.check(Schema.isGreaterThan(0)),
+  url: Schema.String,
   derivative: Schema.optional(Schema.String),
   derivativeRevision: Schema.optional(Schema.String),
   installation: Schema.optional(Schema.String),
+  startTime: Schema.optional(Schema.String),
 })
 type Registration = typeof Registration.Type
 
@@ -367,6 +400,18 @@ const readRegistration = (fs: FileSystem.FileSystem, file: string) =>
     if (Option.isNone(decoded)) return { _tag: "invalid" } as const
     return { _tag: "valid", info: decoded.value } as const
   })
+
+/** SHA-256 of a file, or a failure when it cannot be read. */
+const sha256File = (fs: FileSystem.FileSystem, file: string) =>
+  Effect.gen(function* () {
+    const bytes = yield* fs.readFile(file)
+    return createHash("sha256").update(bytes).digest("hex")
+  })
+
+/** Whether `target` is `root` or below it. */
+function isInside(target: string, root: string) {
+  return target === root || target.startsWith(root + path.sep)
+}
 
 // Remove only a command link that still points at this installation's launcher.
 const findCommandLink = (fs: FileSystem.FileSystem, launcher: string, home: string) =>

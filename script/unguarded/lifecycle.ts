@@ -97,12 +97,19 @@ export function verifyServiceOwnership(root: string) {
     errors.push(`${SERVICE_CONFIG}: the stock service.json file is still a migration candidate`)
 
   const database = read(root, DATABASE_PATH)
-  if (!/if \(UNGUARDED\) return derivativeDatabase\(data\)/.test(database))
+  if (!/if \(UNGUARDED\) return derivativeDatabasePath\(data\)/.test(database))
     errors.push(`${DATABASE_PATH}: derivative database is not selected`)
-  if (!/override === ":memory:"\) return override/.test(database))
-    errors.push(`${DATABASE_PATH}: explicit :memory: override is not honored`)
-  if (!/path\.isAbsolute\(override\)/.test(database))
-    errors.push(`${DATABASE_PATH}: absolute database overrides are not rejected`)
+  // The rules themselves live with the profile roots so a direct binary and the
+  // launcher cannot drift apart.
+  const rootsModule = read(root, GLOBAL_ROOTS)
+  if (!/export function derivativeDatabasePath/.test(rootsModule))
+    errors.push(`${GLOBAL_ROOTS}: derivative database containment is missing`)
+  if (!/name === ":memory:"\) return name/.test(rootsModule))
+    errors.push(`${GLOBAL_ROOTS}: explicit :memory: override is not honored`)
+  if (!/path\.isAbsolute\(name\)/.test(rootsModule))
+    errors.push(`${GLOBAL_ROOTS}: absolute database overrides are not rejected`)
+  if (!/isSymbolicLink\(\)\)/.test(rootsModule))
+    errors.push(`${GLOBAL_ROOTS}: a symlinked database is not rejected`)
 
   return errors
 }
@@ -134,8 +141,11 @@ export function verifySignalSafety(root: string) {
       errors.push(`${file}: termination does not clear a provably exited owner safely`)
     if (!/probe\.status !== "verified"/.test(client))
       errors.push(`${file}: termination does not require a verified owner`)
-    if (!client.includes("startTime"))
-      errors.push(`${file}: termination does not check the process lifetime`)
+    // Lifetime agreement is enforced inside the probe, so every caller gets it.
+    if (!/lifecycle-mismatch/.test(probe))
+      errors.push(`${CLIENT_PROBE}: the registration and live process lifetime are not compared`)
+    if (!client.includes("options.installation") && !client.includes("installation: options.installation"))
+      errors.push(`${file}: termination does not bind to the caller's installation`)
   }
 
   const registration = read(root, REGISTRATION)
@@ -153,6 +163,20 @@ export function verifySignalSafety(root: string) {
     if (!new RegExp(`${field}: Schema\\.optional`).test(protocol))
       errors.push(`${PROTOCOL_SERVER}: server info does not expose ${field}`)
   }
+
+  const probeSource = read(root, CLIENT_PROBE)
+  if (!/export function ownedByCaller/.test(probeSource))
+    errors.push(`${CLIENT_PROBE}: the caller's installation is not verified`)
+  if (!/if \(!DERIVATIVE\) return true\s*\n\s*if \(expected === undefined\) return false/.test(probeSource))
+    errors.push(`${CLIENT_PROBE}: a caller without an installation identity is still accepted`)
+
+  const serviceConfig = read(root, SERVICE_CONFIG)
+  if (!/installation: Installation\.installationIdentity\(\)\.id/.test(serviceConfig))
+    errors.push(`${SERVICE_CONFIG}: CLI calls do not pass their own installation identity`)
+
+  const installModule = read(root, "packages/cli/src/services/installation.ts")
+  if (!installModule.includes("isInside(canonicalExecutable, canonical)"))
+    errors.push("packages/cli/src/services/installation.ts: an inherited root is trusted without proving the executable lives there")
 
   const roots = read(root, GLOBAL_ROOTS)
   if (!/function derivativeProfile\(\)/.test(roots))

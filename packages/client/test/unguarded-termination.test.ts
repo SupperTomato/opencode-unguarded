@@ -9,7 +9,10 @@ import path from "node:path"
  * the release build does, and asks the real client to stop a registration whose
  * endpoint answers in a way that may or may not prove ownership.
  */
-const serviceModule = path.join(import.meta.dir, "..", "src", "promise", "service.ts")
+const clients = [
+  { name: "Promise", module: path.join(import.meta.dir, "..", "src", "promise", "service.ts") },
+  { name: "Effect", module: path.join(import.meta.dir, "..", "src", "effect", "service.ts") },
+]
 
 const DEFINES = [
   "--define",
@@ -83,16 +86,28 @@ async function victim(mode: "not-found" | "matching") {
   }
 }
 
-async function stop(registration: string) {
+/** Run the real client's stop against a registration, with the caller identity. */
+async function stop(registration: string, client: (typeof clients)[number], caller = "installation-1") {
+  const source =
+    client.name === "Promise"
+      ? `const { stop } = await import(${JSON.stringify(client.module)})
+await stop({ file: ${JSON.stringify(registration)}, installation: ${JSON.stringify(caller)} })`
+      : `const { Service } = await import(${JSON.stringify(client.module)})
+const { Effect } = await import("effect")
+const { NodeFileSystem } = await import("@effect/platform-node")
+const result = await Effect.runPromise(
+  Service.stop({ file: ${JSON.stringify(registration)}, installation: ${JSON.stringify(caller)} }).pipe(
+    Effect.provide(NodeFileSystem.layer),
+  ),
+)`
   const child = Bun.spawn(
     [
       process.execPath,
       ...DEFINES,
       "-e",
       `
-const { stop } = await import(${JSON.stringify(serviceModule)})
 try {
-  await stop({ file: ${JSON.stringify(registration)} })
+  ${source}
   console.log("STOPPED")
 } catch (error) {
   console.log("REFUSED " + error.message)
@@ -101,34 +116,53 @@ try {
     ],
     { cwd: path.join(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe" },
   )
-  const [code, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()])
-  expect(code).toBe(0)
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ])
+  expect({ code, stderr }).toMatchObject({ code: 0 })
   return stdout
 }
 
-test("a 404 health response never authorizes signalling the registered PID", async () => {
-  const owner = await victim("not-found")
-  try {
-    const output = await stop(owner.registration)
-    expect(output).toContain("REFUSED")
-    expect(output).toContain("not-found")
-    // The unrelated process is still alive and received no signal.
-    expect(owner.child.exitCode).toBe(null)
-    expect(await owner.signal()).toBe(false)
-  } finally {
-    await owner.dispose()
-  }
-}, 30_000)
+for (const client of clients) {
+  test(`${client.name}: a 404 health response never authorizes signalling the registered PID`, async () => {
+    const owner = await victim("not-found")
+    try {
+      const output = await stop(owner.registration, client)
+      expect(output).toContain("REFUSED")
+      expect(output).toContain("not-found")
+      // The unrelated process is still alive and received no signal.
+      expect(owner.child.exitCode).toBe(null)
+      expect(await owner.signal()).toBe(false)
+    } finally {
+      await owner.dispose()
+    }
+  }, 30_000)
 
-test("a proven owner is stopped through the real client", async () => {
-  const owner = await victim("matching")
-  try {
-    // Awaiting `exited` lets Bun reap the child; without it the child stays a
-    // zombie and still answers kill(pid, 0), which is a harness artifact.
-    const [output] = await Promise.all([stop(owner.registration), owner.child.exited])
-    expect(output).toBe("STOPPED\n")
-    expect(await owner.signal()).toBe(true)
-  } finally {
-    await owner.dispose()
-  }
-}, 30_000)
+  test(`${client.name}: a proven owner is stopped through the real client`, async () => {
+    const owner = await victim("matching")
+    try {
+      // Awaiting `exited` lets Bun reap the child; without it the child stays a
+      // zombie and still answers kill(pid, 0), which is a harness artifact.
+      const [output] = await Promise.all([stop(owner.registration, client), owner.child.exited])
+      expect(output).toBe("STOPPED\n")
+      expect(await owner.signal()).toBe(true)
+    } finally {
+      await owner.dispose()
+    }
+  }, 30_000)
+
+  test(`${client.name}: a caller from another installation never signals the owner`, async () => {
+    const owner = await victim("matching")
+    try {
+      const output = await stop(owner.registration, client, "installation-2")
+      expect(output).toContain("REFUSED")
+      expect(output).toContain("installation-mismatch")
+      expect(owner.child.exitCode).toBe(null)
+      expect(await owner.signal()).toBe(false)
+    } finally {
+      await owner.dispose()
+    }
+  }, 30_000)
+}
