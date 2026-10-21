@@ -40,11 +40,26 @@ jobs:
 
       - name: Verify checked-in source is fully patched
         run: |
+          VERSION=$(jq -r .upstream.version manifests/*.json | head -1)
+          bun script/unguarded/apply.ts "$VERSION" --root . --check
+          bun script/unguarded/telemetry.ts . --check
+          bun script/unguarded/lifecycle.ts . --check
+
+      - name: Verify each manifest against its pinned upstream source
+        run: |
           for file in manifests/*.json; do
             VERSION=$(jq -r .upstream.version "$file")
-            bun script/unguarded/apply.ts "$VERSION" --root . --check
+            COMMIT=$(jq -r .upstream.commit "$file")
+            DIR=$(mktemp -d)
+            git -C "$DIR" init -q
+            git -C "$DIR" remote add origin https://github.com/anomalyco/opencode.git
+            git -C "$DIR" fetch -q --depth=1 origin "$COMMIT"
+            git -C "$DIR" checkout -q FETCH_HEAD
+            # A pinned checkout is pristine: apply, then verify the resulting state.
+            bun script/unguarded/apply.ts "$VERSION" --root "$DIR" || exit 1
+            bun script/unguarded/apply.ts "$VERSION" --root "$DIR" --check || exit 1
+            rm -rf "$DIR"
           done
-          bun script/unguarded/telemetry.ts . --check
 
       - name: Verify workflows parse
         run: |

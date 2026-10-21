@@ -12,6 +12,11 @@ on:
         required: false
         default: false
         type: boolean
+      derivative_revision:
+        description: "Derivative revision for this upstream version (e.g. 2)"
+        required: true
+        default: "2"
+        type: string
 
 permissions:
   contents: read
@@ -38,6 +43,12 @@ jobs:
 
       - name: Checkout derivative
         uses: actions/checkout@v4
+
+      - name: Record build identity
+        id: identity
+        run: |
+          echo "derivative_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "manifest_sha=$(sha256sum "manifests/${{ inputs.upstream_version }}.json" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Verify manifest exists
         env:
@@ -114,8 +125,26 @@ jobs:
           bun run --cwd packages/core typecheck
           bun run --cwd packages/app typecheck
 
-      - name: Run derivative tests
+      - name: Verify patched source (exact release source)
+        env:
+          VERSION: ${{ inputs.upstream_version }}
+        run: |
+          bun script/unguarded/apply.ts "$VERSION" --root opencode-src --check
+          bun script/unguarded/telemetry.ts opencode-src --check
+          bun script/unguarded/lifecycle.ts opencode-src --check
+
+      - name: Run derivative tests against the release source
+        env:
+          UNGUARDED_SOURCE_ROOT: ${{ github.workspace }}/opencode-src
+          UNGUARDED_PRISTINE: ${{ github.workspace }}/opencode-src
         run: bun test ./test/unguarded/
+
+      - name: Verify preserved runtime permissions are unchanged
+        run: |
+          git -C opencode-src diff --exit-code -- \
+            packages/core/src/permission.ts \
+            packages/core/src/plugin/agent.ts \
+            packages/core/src/plugin/plan.ts
 
       - name: Build linux-x64
         working-directory: opencode-src/packages/cli
@@ -148,8 +177,6 @@ jobs:
           fi
 
       - name: Verify no telemetry egress
-        env:
-          VERSION: ${{ inputs.upstream_version }}
         run: |
           cat > /tmp/collector.ts <<'EOF'
           const hits: string[] = []
@@ -162,21 +189,30 @@ jobs:
             },
           })
           await Bun.write("/tmp/collector.port", String(server.port))
-          await Bun.sleep(20000)
+          await Bun.sleep(25000)
           await Bun.write("/tmp/collector.hits", JSON.stringify(hits))
           server.stop(true)
           process.exit(0)
           EOF
           rm -f /tmp/collector.port /tmp/collector.hits
           bun /tmp/collector.ts &
+          COLLECTOR_PID=$!
           for i in $(seq 1 50); do [ -f /tmp/collector.port ] && break; sleep 0.2; done
+          if [ ! -f /tmp/collector.port ]; then
+            echo "collector failed to start" >&2
+            kill "$COLLECTOR_PID" 2>/dev/null || true
+            exit 1
+          fi
           PORT=$(cat /tmp/collector.port)
           export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:$PORT"
-          export XDG_DATA_HOME=/tmp/iso/data XDG_CONFIG_HOME=/tmp/iso/config XDG_CACHE_HOME=/tmp/iso/cache XDG_STATE_HOME=/tmp/iso/state
-          mkdir -p /tmp/iso/{data,config,cache,state}
-          opencode-src/packages/cli/dist/cli-linux-x64/bin/opencode --version
-          opencode-src/packages/cli/dist/cli-linux-x64/bin/opencode debug paths > /dev/null
-          wait || true
+          export OTEL_SDK_DISABLED=false
+          export XDG_DATA_HOME=/tmp/iso/data XDG_CONFIG_HOME=/tmp/iso/config
+          export XDG_CACHE_HOME=/tmp/iso/cache XDG_STATE_HOME=/tmp/iso/state
+          mkdir -p /tmp/iso/data /tmp/iso/config /tmp/iso/cache /tmp/iso/state
+          BIN=opencode-src/packages/cli/dist/cli-linux-x64/bin/opencode
+          "$BIN" --version
+          "$BIN" debug paths > /dev/null
+          wait "$COLLECTOR_PID"
           HITS=$(cat /tmp/collector.hits)
           echo "collector hits: $HITS"
           if [ "$HITS" != "[]" ]; then
@@ -195,8 +231,21 @@ jobs:
           chmod +x "$STAGE/libexec/opencode" "$STAGE/bin/opencode-unguarded"
           cp LICENSE "$STAGE/LICENSE"
           cp THIRD_PARTY_NOTICES.md "$STAGE/THIRD_PARTY_NOTICES.md"
-          jq -n --arg v "$VERSION" --arg c "$(jq -r .upstream.commit manifests/$VERSION.json)" \
-            '{version:$v, upstreamCommit:$c, derivative:"opencode-unguarded"}' > "$STAGE/BUILD-INFO.json"
+          jq -n \
+            --arg v "$VERSION" \
+            --arg c "$(jq -r .upstream.commit manifests/$VERSION.json)" \
+            --arg pkg "$(jq -r .upstream.npmPackage manifests/$VERSION.json)" \
+            --arg dc "${{ steps.identity.outputs.derivative_commit }}" \
+            --arg mh "${{ steps.identity.outputs.manifest_sha }}" \
+            --arg rev "${{ inputs.derivative_revision }}" \
+            --arg run "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg bun "$(bun --version)" \
+            --arg lock "$(sha256sum opencode-src/bun.lock | cut -d' ' -f1)" \
+            '{version:$v, upstreamPackage:$pkg, upstreamCommit:$c, derivative:"opencode-unguarded",
+              derivativeCommit:$dc, derivativeRevision:$rev, manifestSha256:$mh, workflowRun:$run,
+              bunVersion:$bun, upstreamLockSha256:$lock, target:"linux-x64", channel:"unguarded"}' \
+            > "$STAGE/BUILD-INFO.json"
+          cat "$STAGE/BUILD-INFO.json"
           tar -C package -czf "opencode-unguarded-linux-x64.tar.gz" opencode-unguarded
           sha256sum opencode-unguarded-linux-x64.tar.gz > checksums.sha256
 
@@ -224,17 +273,27 @@ jobs:
         with:
           name: opencode-unguarded-linux-x64
 
+      - name: Verify downloaded artifact
+        run: |
+          sha256sum -c checksums.sha256
+          tar tzf opencode-unguarded-linux-x64.tar.gz > /dev/null
+          tar xzf opencode-unguarded-linux-x64.tar.gz
+          ./opencode-unguarded/bin/opencode-unguarded --version
+          ./opencode-unguarded/bin/opencode-unguarded --help > /dev/null
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.upstream_version }}
+          REVISION: ${{ inputs.derivative_revision }}
         run: |
-          TAG="v${VERSION}-unguarded.1"
+          TAG="v${VERSION}-unguarded.${REVISION}"
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "Release $TAG already exists; refusing to overwrite" >&2
             exit 1
           fi
           gh release create "$TAG" \
-            --title "OpenCode Unguarded v${VERSION}" \
+            --target "${{ github.sha }}" \
+            --title "OpenCode Unguarded v${VERSION} (revision ${REVISION})" \
             --notes-file RELEASE_NOTES.md \
             opencode-unguarded-linux-x64.tar.gz checksums.sha256

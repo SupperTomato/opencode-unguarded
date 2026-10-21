@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { stripTelemetry, verifyTelemetryDisabled } from "../../script/unguarded/telemetry"
 
-const repoRoot = path.join(import.meta.dir, "..", "..")
+const repoRoot = process.env.UNGUARDED_SOURCE_ROOT ?? path.join(import.meta.dir, "..", "..")
 
 const files = [
   "packages/cli/package.json",

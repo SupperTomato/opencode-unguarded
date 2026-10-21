@@ -14,7 +14,7 @@ import {
 } from "../../script/unguarded/apply"
 
 const manifest = loadManifest("2.1.2")
-const repoRoot = path.join(import.meta.dir, "..", "..")
+const repoRoot = process.env.UNGUARDED_SOURCE_ROOT ?? path.join(import.meta.dir, "..", "..")
 
 const touched = new Set<string>([
   ...manifest.injection.appliesTo,

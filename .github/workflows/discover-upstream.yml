@@ -43,7 +43,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v${{ steps.upstream.outputs.version }}-unguarded.1"
+          TAG="v${{ steps.upstream.outputs.version }}-unguarded.2"
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
@@ -55,4 +55,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.upstream.outputs.version }}
-        run: gh workflow run build-release.yml -f upstream_version="$VERSION" -f publish=false
+        run: gh workflow run build-release.yml --ref "$GITHUB_REF_NAME" -f upstream_version="$VERSION" -f derivative_revision=2 -f publish=false
