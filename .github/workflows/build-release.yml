@@ -286,7 +286,7 @@ jobs:
           mkdir -p "$ACCEPT"
           tar xzf opencode-unguarded-linux-x64.tar.gz -C "$ACCEPT"
           cp packaging/linux-x64/model-stub.ts "$ACCEPT/opencode-unguarded/model-stub.ts"
-          bash "$ACCEPT/opencode-unguarded/acceptance.sh" "$ACCEPT/opencode-unguarded" "$opencode-unguarded-linux-x64.tar.gz"
+          bash "$ACCEPT/opencode-unguarded/acceptance.sh" "$ACCEPT/opencode-unguarded" "$PWD/opencode-unguarded-linux-x64.tar.gz"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -10,8 +10,16 @@ set -euo pipefail
 
 # Resolve both binaries before any `cd`, so a relative path from the caller's
 # directory keeps working once the harness changes directory.
-candidate="$(cd -P "$(dirname "${1:?usage: telemetry-harness.sh <candidate-binary> <stock-binary>}")" && pwd)/$(basename "$1")"
-stock="$(cd -P "$(dirname "${2:?usage: telemetry-harness.sh <candidate-binary> <stock-binary>}")" && pwd)/$(basename "$2")"
+candidate_arg="${1:-}"
+stock_arg="${2:-}"
+case "$candidate_arg" in
+  ""|-*) echo "usage: telemetry-harness.sh <candidate-binary> <stock-binary>" >&2; exit 1 ;;
+esac
+case "$stock_arg" in
+  ""|-*) echo "usage: telemetry-harness.sh <candidate-binary> <stock-binary>" >&2; exit 1 ;;
+esac
+candidate="$(cd -P -- "$(dirname -- "$candidate_arg")" && pwd)/$(basename -- "$candidate_arg")"
+stock="$(cd -P -- "$(dirname -- "$stock_arg")" && pwd)/$(basename -- "$stock_arg")"
 [ -x "$candidate" ] || { echo "candidate binary is not executable: $candidate" >&2; exit 1; }
 [ -x "$stock" ] || { echo "stock binary is not executable: $stock" >&2; exit 1; }
 script_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
