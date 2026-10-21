@@ -54,7 +54,16 @@ prefix_real="$(cd -P "$prefix" && pwd)"
 if [ -d "$profile" ]; then
   profile_real="$(cd -P "$profile" && pwd)"
 else
-  profile_real="$(realpath -m -- "$profile")"
+  # Normalize a missing profile lexically without creating it. Resolve the
+  # nearest existing ancestor so `..` cannot pass the containment checks.
+  profile_real="$profile"
+  rest=""
+  while [ ! -d "$profile_real" ]; do
+    [ "$profile_real" = "/" ] && break
+    rest="/$(basename "$profile_real")$rest"
+    profile_real="$(dirname "$profile_real")"
+  done
+  profile_real="$(cd -P "$profile_real" && pwd)$rest"
 fi
 
 case "$prefix_real" in

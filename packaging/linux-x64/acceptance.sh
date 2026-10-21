@@ -9,8 +9,8 @@
 set -euo pipefail
 
 # Canonicalize before any `cd`: the release job passes a relative archive path.
-package="$(realpath -e "${1:?usage: acceptance.sh <extracted-package-dir> <archive>}")"
-archive="$(realpath -e "${2:?usage: acceptance.sh <extracted-package-dir> <archive>}")"
+package="$(cd -P "${1:?usage: acceptance.sh <extracted-package-dir> <archive>}" && pwd)"
+archive="$(cd -P "$(dirname "${2:?usage: acceptance.sh <extracted-package-dir> <archive>}")" && pwd)/$(basename "$2")"
 script_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="$(mktemp -d)"
 cleanup() {
