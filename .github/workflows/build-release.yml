@@ -112,7 +112,8 @@ jobs:
           VERSION: ${{ inputs.upstream_version }}
         run: |
           bun script/unguarded/apply.ts "$VERSION" --root opencode-src
-          bun script/unguarded/validate.ts --version "$VERSION" --root opencode-src --upstream .check/pristine --release
+          # The binary gates run after the build; here only source gates must pass.
+          bun script/unguarded/validate.ts --version "$VERSION" --root opencode-src --upstream .check/pristine
 
       - name: Verify no unintended source drift
         run: |
