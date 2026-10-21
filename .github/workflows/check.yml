@@ -59,11 +59,11 @@ jobs:
           UNGUARDED_DERIVATIVE_ROOT: ${{ github.workspace }}
           UNGUARDED_UPSTREAM: ${{ github.workspace }}/.check/upstream
         run: |
-          mkdir -p .check
+          mkdir -p "$GITHUB_WORKSPACE/.check"
           VERSION=$(jq -r .upstream.version "$(ls manifests/*.json | head -1)")
           COMMIT=$(jq -r .upstream.commit "$(ls manifests/*.json | head -1)")
           REPOSITORY=$(jq -r .upstream.repository "$(ls manifests/*.json | head -1)")
-          DIR=.check/upstream
+          DIR="$GITHUB_WORKSPACE/.check/upstream"
           rm -rf "$DIR"
           git init -q "$DIR"
           git -C "$DIR" remote add origin "$REPOSITORY"
@@ -75,11 +75,11 @@ jobs:
         env:
           UNGUARDED_UPSTREAM: ${{ github.workspace }}/.check/upstream
         run: |
-          mkdir -p .check
+          mkdir -p "$GITHUB_WORKSPACE/.check"
           for file in manifests/*.json; do
             VERSION=$(jq -r .upstream.version "$file")
             COMMIT=$(jq -r .upstream.commit "$file")
-            DIR=.check/upstream
+            DIR="$GITHUB_WORKSPACE/.check/upstream"
             rm -rf "$DIR"
             git init -q "$DIR"
             git -C "$DIR" remote add origin "$(jq -r .upstream.repository "$file")"
