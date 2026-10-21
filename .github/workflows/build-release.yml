@@ -141,8 +141,13 @@ jobs:
       - name: Canonical repository check
         working-directory: opencode-src
         # The release source is the tree that becomes the binary, so it gets the
-        # same canonical lint and typecheck the repository requires.
-        run: bun run check
+        # same canonical lint and typecheck the repository requires. Re-running
+        # the frozen install first repairs a partially linked dependency tree
+        # (for example a workspace whose hoisted tsconfig did not link), which
+        # would otherwise fail an unrelated package.
+        run: |
+          bun install --frozen-lockfile
+          bun run check
 
       - name: Run derivative tooling tests
         env:
