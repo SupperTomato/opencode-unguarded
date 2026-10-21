@@ -4,7 +4,17 @@ import { contenderPool, spawnServiceContender } from "../service-contender.js"
 import { defaultEnsureTiming, ensureTiming, type EnsureTiming } from "../service-timing.js"
 import { matchesVersion } from "../service-version.js"
 import { PtyHandoff } from "../pty-handoff.js"
-import { decide, fallback, headers, ownedByThisBuild, probeResult, same } from "../service-probe.js"
+import {
+  decide,
+  fallback,
+  headers,
+  isDerivative,
+  isOwnershipConflict,
+  ownedByThisBuild,
+  ownerExited,
+  probeResult,
+  same,
+} from "../service-probe.js"
 
 export * from "../service.js"
 export { headers }
@@ -107,6 +117,17 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
       return Option.none()
     }
 
+    // A registration naming another build or installation is not a missing
+    // service: spawning a contender would either fail on the port or make the
+    // mismatch harder to see. Report it instead.
+    if (info !== undefined && isOwnershipConflict(registration))
+      return yield* Effect.fail(
+        new Error(
+          `The registered background service belongs to a different OpenCode build or installation` +
+            `${registration.reason === undefined ? "" : ` (${registration.reason})`}. Stop it, then start this build.`,
+        ),
+      )
+
     const failed = pool.reap()
     if (failed !== undefined) return yield* Effect.fail(failed)
     if (pool.shouldRecruit(info !== undefined)) {
@@ -131,6 +152,10 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
 /** Stop the registered local service. */
 export const stop = Effect.fn("service.stop")(function* (options: StopOptions = {}) {
   const info = yield* read(options.file)
+  // A derivative build refuses to prepare handoff state for an owner it cannot
+  // verify, so an unrelated process is never touched.
+  if (isDerivative() && info !== undefined && options.pty === "handoff")
+    yield* requireVerifiedOwner(info, options, defaultEnsureTiming.requestTimeout)
   // Terminal handoff is best-effort; it must never keep the old service running.
   yield* Effect.tryPromise(() =>
     options.pty === "handoff" && info !== undefined
@@ -140,11 +165,30 @@ export const stop = Effect.fn("service.stop")(function* (options: StopOptions = 
   if (info !== undefined) yield* terminate(info, options, ensureTiming(options))
 })
 
+const requireVerifiedOwner = Effect.fnUntraced(function* (
+  info: Info,
+  options: { readonly file?: string },
+  timeout: number,
+) {
+  const probe = yield* Effect.promise(() => probeResult(info, timeout))
+  if (probe.status !== "verified" || probe.service === undefined)
+    return yield* Effect.fail(
+      new Error(
+        `refusing to stop service pid ${info.pid}: the registered endpoint did not prove it is this owner` +
+          `${probe.reason === undefined ? "" : ` (${probe.reason})`}. ` +
+          `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
+      ),
+    )
+})
+
 /** Schema for the local service registration file. */
 export const Info = Schema.Struct({
   id: Schema.optional(Schema.String),
   version: Schema.optional(Schema.String),
   derivative: Schema.optional(Schema.String),
+  derivativeRevision: Schema.optional(Schema.String),
+  installation: Schema.optional(Schema.String),
+  startTime: Schema.optional(Schema.String),
   url: Schema.String,
   pid: Schema.Int.check(Schema.isGreaterThan(0)),
   password: Schema.optional(Schema.String),
@@ -185,18 +229,41 @@ const stopped = Effect.fnUntraced(function* (pid: number) {
 const terminate = Effect.fnUntraced(function* (info: Info, options: { readonly file?: string }, timing: EnsureTiming) {
   const current = yield* read(options.file)
   if (current === undefined || !same(current, info)) return
-  // Never signal a PID that is not proven to be this registered owner. A stale
-  // registration can outlive its process, and the PID may then belong to an
-  // unrelated same-user process. Callers treat this as a failed stop so a
-  // removal cannot proceed against a service that is still running.
-  const verified = (yield* Effect.promise(() => probeResult(info, timing.requestTimeout))).service
-  if (!verified)
-    return yield* Effect.fail(
-      new Error(
-        `refusing to stop service pid ${info.pid}: the registered endpoint did not confirm it is the owner. ` +
-          `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
-      ),
-    )
+  // opencode-unguarded never signals a PID that is not proven to be this
+  // registered owner. A stale registration can outlive its process, and the PID
+  // may then belong to an unrelated same-user process. Callers treat a refusal
+  // as a failed stop so removal cannot proceed against a running service. Stock
+  // builds keep upstream recovery, which deliberately replaces an unresponsive
+  // owner that cannot answer.
+  if (isDerivative()) {
+    // A provably exited owner leaves only a stale registration. Clearing it is
+    // safe and does not signal anything, so recovery is not blocked forever.
+    if (ownerExited(info)) {
+      const latest = yield* read(options.file)
+      if (latest !== undefined && same(latest, info)) {
+        const files = yield* FileSystem.FileSystem
+        yield* files.remove(options.file ?? fallback()).pipe(Effect.ignore)
+      }
+      return
+    }
+    const probe = yield* Effect.promise(() => probeResult(info, timing.requestTimeout))
+    if (probe.status !== "verified" || probe.service === undefined)
+      return yield* Effect.fail(
+        new Error(
+          `refusing to stop service pid ${info.pid}: the registered endpoint did not prove it is this owner` +
+            `${probe.reason === undefined ? "" : ` (${probe.reason})`}. ` +
+            `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
+        ),
+      )
+    // A PID can be reused between the registration and this moment. When the
+    // owner reports a start time, require the registration to agree.
+    if (info.startTime !== undefined && probe.service.startTime !== info.startTime)
+      return yield* Effect.fail(
+        new Error(
+          `refusing to stop service pid ${info.pid}: its process start time no longer matches the registration.`,
+        ),
+      )
+  }
   yield* signal(info.pid, "SIGTERM")
   const done = yield* stopped(info.pid).pipe(Effect.retry(poll(timing)), Effect.option)
   // The registration can disappear or change hands before this process exits. Only the PID we

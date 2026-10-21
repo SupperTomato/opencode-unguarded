@@ -24,6 +24,13 @@ const UNINSTALL = "packages/cli/src/commands/handlers/uninstall.ts"
 const DATABASE_PATH = "packages/cli/src/database-path.ts"
 const VERSION = "packages/cli/src/version.ts"
 
+const CLIENT_PROBE = "packages/client/src/service-probe.ts"
+const CLIENT_EFFECT = "packages/client/src/effect/service.ts"
+const CLIENT_PROMISE = "packages/client/src/promise/service.ts"
+const SERVER_PROCESS = "packages/cli/src/server-process.ts"
+const PROTOCOL_SERVER = "packages/protocol/src/groups/server.ts"
+const GLOBAL_ROOTS = "packages/util/src/global-roots.ts"
+
 const PORT = 47499
 const DATABASE = "opencode-unguarded.db"
 
@@ -64,10 +71,18 @@ export function verifyServiceOwnership(root: string) {
     errors.push(`${VERSION}: derivative identity is missing`)
 
   const registration = read(root, REGISTRATION)
-  if (!/\.\.\.\(UNGUARDED \? \{ derivative: UNGUARDED_IDENTITY\.name \} : \{\}\)/.test(registration))
-    errors.push(`${REGISTRATION}: registrations are not marked as derivative-owned`)
-  if (!/found\.derivative === info\.derivative/.test(registration))
-    errors.push(`${REGISTRATION}: registration ownership is not compared`)
+  // The registration must carry the distribution and the revision, and the
+  // self-ownership check must compare both plus the installation identity.
+  if (!registration.includes("derivative: options.derivative"))
+    errors.push(`${REGISTRATION}: registrations are not marked with the derivative build identity`)
+  if (!registration.includes("derivativeRevision: options.derivativeRevision"))
+    errors.push(`${REGISTRATION}: registrations are not marked with the derivative revision`)
+  if (!registration.includes("installation: options.installation"))
+    errors.push(`${REGISTRATION}: registrations are not marked with an installation identity`)
+  if (!/found\.derivativeRevision === info\.derivativeRevision/.test(registration))
+    errors.push(`${REGISTRATION}: registration ownership does not compare the derivative revision`)
+  if (!/found\.installation === info\.installation/.test(registration))
+    errors.push(`${REGISTRATION}: registration ownership does not compare the installation identity`)
 
   const service = read(root, SERVICE_CONFIG)
   if (!service.includes('export const DERIVATIVE_CHANNEL = "unguarded"'))
@@ -76,6 +91,8 @@ export function verifyServiceOwnership(root: string) {
     errors.push(`${SERVICE_CONFIG}: derivative port ${PORT} not assigned`)
   if (!/registration\.derivative === UNGUARDED_IDENTITY\.name/.test(service))
     errors.push(`${SERVICE_CONFIG}: stock registration migration is not rejected`)
+  if (!/registration\.derivativeRevision === UNGUARDED_IDENTITY\.revision/.test(service))
+    errors.push(`${SERVICE_CONFIG}: another derivative revision's registration is still migratable`)
   if (!/!UNGUARDED && name !== "service\.json"/.test(service))
     errors.push(`${SERVICE_CONFIG}: the stock service.json file is still a migration candidate`)
 
@@ -87,6 +104,63 @@ export function verifyServiceOwnership(root: string) {
   if (!/path\.isAbsolute\(override\)/.test(database))
     errors.push(`${DATABASE_PATH}: absolute database overrides are not rejected`)
 
+  return errors
+}
+
+/**
+ * Termination and storage invariants that used to be enforced only by the
+ * launcher or only by a marker string. These are source fingerprints, not
+ * behavioral proof: the behavioral suites run separately.
+ */
+export function verifySignalSafety(root: string) {
+  const errors: string[] = []
+  const probe = read(root, CLIENT_PROBE)
+  if (!/export function ownedByThisBuild/.test(probe))
+    errors.push(`${CLIENT_PROBE}: build ownership predicate is missing`)
+  if (!/info\.derivativeRevision === undefined\) return false/.test(probe))
+    errors.push(`${CLIENT_PROBE}: a revision-less registration is still accepted`)
+  if (!/return info\.derivativeRevision === identity\.revision/.test(probe))
+    errors.push(`${CLIENT_PROBE}: another derivative revision is still accepted`)
+  if (!/if \(DERIVATIVE\) return \{ status: "incompatible", reason: "not-found"/.test(probe))
+    errors.push(`${CLIENT_PROBE}: a 404 health response is not refused for derivative builds`)
+  if (!/export function ownerExited/.test(probe))
+    errors.push(`${CLIENT_PROBE}: provably-exited owner detection is missing`)
+
+  for (const file of [CLIENT_EFFECT, CLIENT_PROMISE]) {
+    const client = read(root, file)
+    if (!/if \(isDerivative\(\)\) \{/.test(client))
+      errors.push(`${file}: termination is not scoped to the derivative build`)
+    if (!client.includes("ownerExited"))
+      errors.push(`${file}: termination does not clear a provably exited owner safely`)
+    if (!/probe\.status !== "verified"/.test(client))
+      errors.push(`${file}: termination does not require a verified owner`)
+    if (!client.includes("startTime"))
+      errors.push(`${file}: termination does not check the process lifetime`)
+  }
+
+  const registration = read(root, REGISTRATION)
+  if (!registration.includes("derivativeRevision: options.derivativeRevision"))
+    errors.push(`${REGISTRATION}: the live build identity is not advertised`)
+
+  const serverProcess = read(root, SERVER_PROCESS)
+  if (!/Installation\.installationIdentity\(\)/.test(serverProcess))
+    errors.push(`${SERVER_PROCESS}: the managed service does not record its installation`)
+  if (!/ProcessIdentity\.processStartTime\(\)/.test(serverProcess))
+    errors.push(`${SERVER_PROCESS}: the managed service does not record its process lifetime`)
+
+  const protocol = read(root, PROTOCOL_SERVER)
+  for (const field of ["derivative", "derivativeRevision", "installation", "startTime"]) {
+    if (!new RegExp(`${field}: Schema\\.optional`).test(protocol))
+      errors.push(`${PROTOCOL_SERVER}: server info does not expose ${field}`)
+  }
+
+  const roots = read(root, GLOBAL_ROOTS)
+  if (!/function derivativeProfile\(\)/.test(roots))
+    errors.push(`${GLOBAL_ROOTS}: the executable does not resolve its own profile`)
+  if (!/path\.isAbsolute\(raw\)/.test(roots))
+    errors.push(`${GLOBAL_ROOTS}: a relative profile is not rejected by the executable`)
+  if (!/canonicalExistingAncestor/.test(roots))
+    errors.push(`${GLOBAL_ROOTS}: profile containment does not resolve symlinked ancestors`)
   return errors
 }
 
@@ -103,8 +177,10 @@ export function verifyDerivativeUninstall(root: string) {
   const body = uninstall.slice(start)
   if (!body.includes("OPENCODE_UNGUARDED_ROOT"))
     errors.push(`${UNINSTALL}: removal does not require a verified installation root`)
-  if (!/found\.derivative === UNGUARDED_IDENTITY\.name/.test(body))
-    errors.push(`${UNINSTALL}: removal does not verify service ownership`)
+  if (!body.includes("verifyInstallationOwnership"))
+    errors.push(`${UNINSTALL}: removal does not verify that the executable belongs to the installation`)
+  if (!/registrationBelongsToInstallation\(owned, ownership\)/.test(body))
+    errors.push(`${UNINSTALL}: removal does not bind the service to this installation`)
   if (!/overlaps the application profile/.test(body))
     errors.push(`${UNINSTALL}: removal does not reject profile overlap`)
   if (!/realPath\(root\)/.test(body))
@@ -119,7 +195,12 @@ export function verifyDerivativeUninstall(root: string) {
 }
 
 export function verifyLifecycle(root: string, manifest: Manifest = loadManifest("2.1.2")) {
-  const errors = [...verifyUpdaterBoundary(root), ...verifyServiceOwnership(root), ...verifyDerivativeUninstall(root)]
+  const errors = [
+    ...verifyUpdaterBoundary(root),
+    ...verifyServiceOwnership(root),
+    ...verifyDerivativeUninstall(root),
+    ...verifySignalSafety(root),
+  ]
   for (const entry of manifest.files) {
     if (!exists(root, entry.file)) errors.push(`${entry.file}: required file is missing`)
   }

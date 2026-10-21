@@ -83,11 +83,16 @@ export function versionBelongsToChannel(
 // was written by this derivative. Version equality alone is not ownership: a
 // stock 2.1.2 registration has the same version string.
 export function registrationBelongsToChannel(
-  registration: { readonly derivative?: string },
+  registration: { readonly derivative?: string; readonly derivativeRevision?: string },
   channel = OPENCODE_CHANNEL,
 ) {
   if (channel !== DERIVATIVE_CHANNEL) return true
-  return registration.derivative === UNGUARDED_IDENTITY.name
+  // A registration from another derivative revision is a different build with
+  // different lifecycle and storage behavior; never migrate it silently.
+  return (
+    registration.derivative === UNGUARDED_IDENTITY.name &&
+    registration.derivativeRevision === UNGUARDED_IDENTITY.revision
+  )
 }
 
 export const migrateRegistration = Effect.fnUntraced(function* (

@@ -15,9 +15,11 @@ repo_dir="$(cd -P "$script_dir/../.." && pwd)"
 collector_script="$repo_dir/script/unguarded/collector.ts"
 [ -f "$collector_script" ] || collector_script="$script_dir/collector.ts"
 [ -f "$collector_script" ] || { echo "collector.ts not found" >&2; exit 1; }
+[ -f "$script_dir/model-stub.ts" ] || { echo "model-stub.ts not found next to the harness" >&2; exit 1; }
 work="$(mktemp -d)"
 collectors=()
 children=()
+models=()
 
 cleanup() {
   for pid in "${children[@]:-}"; do
@@ -25,6 +27,10 @@ cleanup() {
     wait "$pid" 2>/dev/null || true
   done
   for pid in "${collectors[@]:-}"; do
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+  for pid in "${models[@]:-}"; do
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
   done
@@ -51,7 +57,9 @@ exercise() {
   local name="$1" binary="$2" port
   port="$(cat "$work/$name.port")"
   local profile="$work/$name-profile"
-  mkdir -p "$profile/data" "$profile/config" "$profile/cache" "$profile/state" "$profile/tmp"
+  local home="$work/$name-home"
+  local project="$work/$name-project"
+  mkdir -p "$profile/data" "$profile/config/opencode" "$profile/cache" "$profile/state" "$profile/tmp" "$home" "$project"
 
   # General and signal-specific endpoints: an exporter activated through either
   # environment path must be observable.
@@ -64,14 +72,39 @@ exercise() {
   export OTEL_BSP_SCHEDULE_DELAY=100
   export OTEL_BLRP_SCHEDULE_DELAY=100
 
+  # The candidate's profile must be explicit: XDG isolation alone does not
+  # confine a raw derivative binary, which reads its own profile variable. HOME
+  # is isolated too, so neither binary can reach real user state.
   local env=(
+    "HOME=$home"
     "XDG_DATA_HOME=$profile/data"
     "XDG_CONFIG_HOME=$profile/config"
     "XDG_CACHE_HOME=$profile/cache"
     "XDG_STATE_HOME=$profile/state"
     "TMPDIR=$profile/tmp"
+    "OPENCODE_UNGUARDED_PROFILE=$profile"
+    "OPENCODE_DISABLE_AUTOUPDATE=1"
+    "OPENCODE_DISABLE_MODELS_FETCH=1"
     "NO_COLOR=1"
   )
+
+  # A local, deterministic OpenAI-compatible model. The session below must run
+  # real model and tool handling offline, so success cannot depend on network
+  # access or a provider account.
+  local model_port
+  model_port="$(cat "$work/model.port")"
+  cat > "$profile/config/opencode/opencode.json" <<JSON
+{
+  "providers": {
+    "harness": {
+      "package": "@opencode/ai/providers/openai-compatible",
+      "name": "Harness",
+      "settings": { "baseURL": "http://127.0.0.1:$model_port/v1", "apiKey": "harness" },
+      "models": { "stub": { "name": "Stub" } }
+    }
+  }
+}
+JSON
 
   # Each exercise must succeed. A crashed candidate would otherwise emit no
   # telemetry and look identical to a correctly patched build.
@@ -84,9 +117,10 @@ exercise() {
   env "${env[@]}" "$binary" serve --port 0 >"$work/$name.serve.log" 2>&1 &
   local server=$!
   children+=("$server")
-  local ready=0
-  for _ in $(seq 1 200); do
-    if grep -q "http://" "$work/$name.serve.log" 2>/dev/null; then ready=1; break; fi
+  local ready=0 url=""
+  for _ in $(seq 1 300); do
+    url="$(grep -oE 'https?://[^ ]+' "$work/$name.serve.log" 2>/dev/null | head -1 || true)"
+    if [ -n "$url" ]; then ready=1; break; fi
     if ! kill -0 "$server" 2>/dev/null; then break; fi
     sleep 0.1
   done
@@ -95,7 +129,44 @@ exercise() {
     cat "$work/$name.serve.log" >&2
     exit 1
   fi
-  sleep 3
+
+  # Readiness is proven through the real API, not a log line. The foreground
+  # server prints its one-off password; authenticate so a 401 is not mistaken
+  # for an unavailable server.
+  local password
+  password="$(sed -n 's/^server password //p' "$work/$name.serve.log" | head -1)"
+  local auth=()
+  [ -n "$password" ] && auth=(-u "opencode:$password")
+  if ! curl -fsS --max-time 5 "${auth[@]}" "$url/api/info" >"$work/$name.info.json" 2>"$work/$name.info.err"; then
+    echo "$name server did not answer /api/info" >&2
+    cat "$work/$name.serve.log" "$work/$name.info.err" >&2
+    exit 1
+  fi
+
+  # Drive a real session through the CLI in front of this server, so model
+  # execution and tool handling run. `run` uses the configured local model and
+  # fails loudly if the session cannot complete.
+  (cd "$project" && env "${env[@]}" "$binary" run --standalone --auto --model harness/stub \
+    "Reply with the single word ok." >"$work/$name.session.log" 2>&1) ||
+    {
+      echo "$name session failed" >&2
+      cat "$work/$name.session.log" >&2
+      exit 1
+    }
+  if ! grep -qi "ok" "$work/$name.session.log"; then
+    echo "$name session produced no assistant answer" >&2
+    cat "$work/$name.session.log" >&2
+    exit 1
+  fi
+
+  # The server must still be alive after the session; a crash after readiness is
+  # a failure, not an absence of telemetry.
+  if ! kill -0 "$server" 2>/dev/null; then
+    echo "$name server exited during the session" >&2
+    cat "$work/$name.serve.log" >&2
+    exit 1
+  fi
+
   kill "$server" 2>/dev/null || true
   wait "$server" 2>/dev/null || true
   sleep 1
@@ -110,6 +181,19 @@ wait_for_hits() {
   return 1
 }
 
+start_model() {
+  PORTFILE="$work/model.port" bun "$script_dir/model-stub.ts" >"$work/model.log" 2>&1 &
+  models+=("$!")
+  for _ in $(seq 1 100); do
+    [ -f "$work/model.port" ] && return 0
+    sleep 0.1
+  done
+  echo "model stub failed to start" >&2
+  cat "$work/model.log" >&2
+  exit 1
+}
+
+start_model
 start_collector candidate
 start_collector stock
 

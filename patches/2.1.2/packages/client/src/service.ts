@@ -50,6 +50,12 @@ export type Info = {
   readonly version?: string
   /** Distribution that wrote this registration. Absent on stock OpenCode. */
   readonly derivative?: string
+  /** Derivative revision that wrote this registration. Absent on stock OpenCode. */
+  readonly derivativeRevision?: string
+  /** Installation that owns this service. Absent on stock OpenCode. */
+  readonly installation?: string
+  /** Operating-system process start time, when the platform exposes one. */
+  readonly startTime?: string
   /** Base URL advertised by the service. */
   readonly url: string
   /** Operating system process identifier. */

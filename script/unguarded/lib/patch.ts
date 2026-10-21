@@ -317,13 +317,14 @@ export function loadManifest(version: string): Manifest {
 /**
  * Verify the checkout is the pinned upstream revision.
  *
- * Git metadata is authoritative. A checkout with readable `.git` metadata must
- * either be exactly the pinned commit or a derivative tree that still descends
- * from it and whose declared files are all final. A source archive without Git
- * metadata is accepted only when every declared file is exactly pristine or
- * exactly final, which pins the reviewed bytes.
+ * Git metadata is authoritative, and the pinned commit must exist as a real
+ * commit object in it: a `.git/HEAD` containing the right text is a claim, not
+ * proof. A checkout with Git metadata must either be exactly the pinned commit
+ * or a derivative tree that still descends from it and whose declared files are
+ * all final. A source archive without Git metadata cannot prove full-tree
+ * identity, so it is rejected for release validation.
  */
-export function verifyUpstreamIdentity(root: string, manifest: Manifest) {
+export function verifyUpstreamIdentity(root: string, manifest: Manifest, options: { readonly sourceArchive?: boolean } = {}) {
   const pkgFile = resolveTarget(root, "packages/cli/package.json")
   if (!fs.existsSync(pkgFile)) fail(`not an OpenCode checkout (missing packages/cli/package.json): ${root}`)
   const pkg = JSON.parse(fs.readFileSync(pkgFile, "utf8")) as { name?: string; version?: string }
@@ -337,9 +338,19 @@ export function verifyUpstreamIdentity(root: string, manifest: Manifest) {
 
   const metadata = gitMetadata(root)
   if (metadata === undefined) {
-    // No Git metadata: the declared bytes must pin the source exactly.
+    if (options.sourceArchive !== true)
+      fail(
+        `no Git metadata at ${root}: an archive cannot prove the full upstream tree; ` +
+          `use a checkout at ${manifest.upstream.commit}`,
+      )
+    // No Git metadata: the declared bytes must pin the source exactly, and an
+    // added file must genuinely be absent.
     for (const entry of manifest.files) {
-      if (entry.pristine === null) continue
+      const file = path.join(root, entry.file)
+      if (entry.pristine === null) {
+        if (fs.existsSync(file)) fail(`${entry.file}: derivative-added file is already present in the source`)
+        continue
+      }
       const digest = sha256(read(root, entry.file))
       if (digest !== entry.pristine && digest !== entry.final)
         fail(`${entry.file}: source does not match the pinned upstream or reviewed output; refusing to patch`)
@@ -349,6 +360,16 @@ export function verifyUpstreamIdentity(root: string, manifest: Manifest) {
 
   if (metadata.head === undefined)
     fail(`checkout has Git metadata but its HEAD could not be read; refusing to patch an unverified source`)
+  if (!isCommit(metadata.gitDir, metadata.head))
+    fail(
+      `checkout HEAD ${metadata.head} is not a commit object in ${metadata.gitDir}; ` +
+        `refusing to patch a source whose identity cannot be proven`,
+    )
+  if (!isCommit(metadata.gitDir, manifest.upstream.commit))
+    fail(
+      `the pinned commit ${manifest.upstream.commit} is not present in ${metadata.gitDir}; ` +
+        `fetch it before patching`,
+    )
 
   if (metadata.head === manifest.upstream.commit) return true
 
@@ -412,6 +433,19 @@ function readHead(headFile: string, commonDir: string) {
   } catch {
     return undefined
   }
+}
+
+function git(gitDir: string, args: ReadonlyArray<string>) {
+  if (typeof Bun === "undefined") return undefined
+  const result = Bun.spawnSync(["git", `--git-dir=${gitDir}`, ...args], { stdout: "pipe", stderr: "ignore" })
+  if (result.exitCode !== 0) return undefined
+  return result.stdout.toString().trim()
+}
+
+/** Whether a revision resolves to a commit object present in this repository. */
+function isCommit(gitDir: string, revision: string) {
+  if (!/^[0-9a-f]{40}$/.test(revision)) return false
+  return git(gitDir, ["cat-file", "-t", revision]) === "commit"
 }
 
 function isAncestor(gitDir: string, ancestor: string, descendant: string) {

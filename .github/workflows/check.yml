@@ -58,18 +58,21 @@ jobs:
         env:
           UNGUARDED_DERIVATIVE_ROOT: ${{ github.workspace }}
           UNGUARDED_UPSTREAM: ${{ github.workspace }}/.check/upstream
+        working-directory: ${{ github.workspace }}/test
         run: |
           mkdir -p "$GITHUB_WORKSPACE/.check"
-          VERSION=$(jq -r .upstream.version "$(ls manifests/*.json | head -1)")
-          COMMIT=$(jq -r .upstream.commit "$(ls manifests/*.json | head -1)")
-          REPOSITORY=$(jq -r .upstream.repository "$(ls manifests/*.json | head -1)")
+          VERSION=$(jq -r .upstream.version "$(ls ../manifests/*.json | head -1)")
+          COMMIT=$(jq -r .upstream.commit "$(ls ../manifests/*.json | head -1)")
+          REPOSITORY=$(jq -r .upstream.repository "$(ls ../manifests/*.json | head -1)")
+          # Identity checks need real commit objects, not a shallow checkout of
+          # one commit, so fetch the pinned history for the tests that inspect it.
           DIR="$GITHUB_WORKSPACE/.check/upstream"
           rm -rf "$DIR"
           git init -q "$DIR"
           git -C "$DIR" remote add origin "$REPOSITORY"
           git -C "$DIR" fetch -q --depth=1 origin "$COMMIT"
           git -C "$DIR" checkout -q FETCH_HEAD
-          bun test ./test/unguarded/
+          bun test unguarded/
 
       - name: Verify each manifest against its pinned upstream source
         env:

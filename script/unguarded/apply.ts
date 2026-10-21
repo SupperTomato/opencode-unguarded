@@ -36,6 +36,7 @@ import {
 } from "./lib/patch"
 
 export {
+  applyRoot,
   exists,
   loadManifest,
   manifestPath,
@@ -83,7 +84,15 @@ export function transforms(manifest: Manifest) {
   )
 }
 
+/**
+ * Apply the reviewed patch set to a verified source tree.
+ *
+ * Identity is enforced here, not only in the CLI: a caller importing this
+ * module gets the same guarantee, so byte transformation can never be used to
+ * write into an unverified tree.
+ */
 export function apply(root: string, manifest: Manifest) {
+  verifyUpstreamIdentity(root, manifest)
   return applyRoot(root, manifest, transforms(manifest))
 }
 
@@ -99,7 +108,6 @@ if (import.meta.main) {
   const manifest = loadManifest(version)
 
   try {
-    verifyUpstreamIdentity(root, manifest)
     if (!check) {
       const changes = apply(root, manifest)
       for (const change of changes) console.log(`patched ${change.file}: ${change.reason}`)

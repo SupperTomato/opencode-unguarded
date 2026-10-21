@@ -6,7 +6,12 @@ import { UnauthorizedError } from "@opencode/protocol/errors"
 import { Api } from "../api"
 import { ServerAuth } from "../auth"
 import { ServerInfo } from "../server-info"
+import { ProcessIdentity } from "@opencode/util/process-identity"
 import { ServerPairing } from "../pairing"
+
+// Captured once: a process's start time is a property of its lifetime, not of
+// an individual request.
+const startTime = ProcessIdentity.processStartTime()
 
 export const ServerHandler = HttpApiBuilder.group(Api, "server.server", (handlers) =>
   Effect.gen(function* () {
@@ -20,6 +25,12 @@ export const ServerHandler = HttpApiBuilder.group(Api, "server.server", (handler
           return {
             version: info.app.version ?? "unknown",
             pid: process.pid ?? 0,
+            ...(info.app.derivative === undefined ? {} : { derivative: info.app.derivative }),
+            ...(info.app.derivativeRevision === undefined
+              ? {}
+              : { derivativeRevision: info.app.derivativeRevision }),
+            ...(info.app.installation === undefined ? {} : { installation: info.app.installation }),
+            ...(startTime === undefined ? {} : { startTime }),
             urls: info.urls(),
             paths: info.paths,
             capabilities: { persistentPty: PersistentPty.available },

@@ -25,7 +25,13 @@ export function layer(
     version: options.version ?? "unknown",
     channel: options.channel ?? "local",
   }
-  const local = Logger.layer(Logging.loggers(app.channel === "local", app.channel), { mergeWithExisting: false }).pipe(
+  // opencode-unguarded: `--dry-run` promises the filesystem is unchanged, so it
+  // uses only the stderr logger: opening the shared log file would create the
+  // log directory and append to a file.
+  const loggers = process.argv.includes("--dry-run")
+    ? [Logging.stderrLogger]
+    : Logging.loggers(app.channel === "local", app.channel)
+  const local = Logger.layer(loggers, { mergeWithExisting: false }).pipe(
     Layer.provide(NodeFileSystem.layer),
     Layer.orDie,
     Layer.merge(Layer.succeed(References.MinimumLogLevel, Logging.minimumLogLevel())),

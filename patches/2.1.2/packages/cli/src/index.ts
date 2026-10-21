@@ -128,11 +128,20 @@ Effect.gen(function* () {
   Effect.annotateLogs({ role: "cli" }),
   Effect.provide(Config.layer),
   Effect.provide(Updater.layer),
+  // opencode-unguarded: `--dry-run` must not create directories, so it gets a
+  // Global layer that only inspects. The other nodes stay registered but are
+  // never demanded by the dry-run handler.
   Effect.provide(
     LayerNode.compile(LayerNode.group([Global.node, AppProcess.node, Npm.node, EffectFlock.node]), {
       replacements: [
         Global.node.replace(
-          Global.layerWith(process.env.OPENCODE_CONFIG_DIR ? { config: process.env.OPENCODE_CONFIG_DIR } : {}),
+          process.argv.includes("--dry-run")
+            ? Global.readOnlyLayer(
+                process.env.OPENCODE_CONFIG_DIR ? { config: process.env.OPENCODE_CONFIG_DIR } : {},
+              )
+            : Global.layerWith(
+                process.env.OPENCODE_CONFIG_DIR ? { config: process.env.OPENCODE_CONFIG_DIR } : {},
+              ),
         ),
       ],
     }),

@@ -5,7 +5,7 @@ import path from "node:path"
 import { Effect, FileSystem, Schedule, Schema } from "effect"
 import { HttpServer } from "effect/http"
 import { NetAddress } from "effect/net"
-import { OPENCODE_VERSION, UNGUARDED, UNGUARDED_IDENTITY } from "../version"
+import { OPENCODE_VERSION, UNGUARDED } from "../version"
 
 const infoJson = Schema.fromJsonString(Service.Info)
 const encodeInfo = Schema.encodeEffect(infoJson)
@@ -17,6 +17,12 @@ export const register = Effect.fnUntraced(function* (options: {
   readonly id: string
   readonly file: string
   readonly shutdown: Effect.Effect<void>
+  /** opencode-unguarded: build and installation the managed service belongs to. */
+  readonly derivative?: string
+  readonly derivativeRevision?: string
+  readonly installation?: string
+  /** Operating-system process start time, used to recognize a reused PID. */
+  readonly startTime?: string
 }) {
   const fs = yield* FileSystem.FileSystem
   const temp = options.file + "." + options.id + ".tmp"
@@ -24,9 +30,17 @@ export const register = Effect.fnUntraced(function* (options: {
   const info = {
     id: options.id,
     version: OPENCODE_VERSION,
-    // opencode-unguarded: ownership marker. Stock OpenCode omits this field, so
-    // an equal version number can never make a stock registration look ours.
-    ...(UNGUARDED ? { derivative: UNGUARDED_IDENTITY.name } : {}),
+    // opencode-unguarded: ownership identity. Stock OpenCode omits these fields,
+    // so an equal version number can never make a stock registration look ours,
+    // and another derivative revision or installation is a different owner.
+    ...(UNGUARDED && options.derivative !== undefined
+      ? {
+          derivative: options.derivative,
+          derivativeRevision: options.derivativeRevision,
+          installation: options.installation,
+        }
+      : {}),
+    ...(options.startTime === undefined ? {} : { startTime: options.startTime }),
     url: HttpServer.formatAddress(options.address),
     pid: process.pid,
     password: options.password,
@@ -37,6 +51,8 @@ export const register = Effect.fnUntraced(function* (options: {
     found.id === info.id &&
     found.version === info.version &&
     found.derivative === info.derivative &&
+    found.derivativeRevision === info.derivativeRevision &&
+    found.installation === info.installation &&
     found.url === info.url &&
     found.pid === info.pid &&
     found.password === info.password

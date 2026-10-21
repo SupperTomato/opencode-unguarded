@@ -1,4 +1,4 @@
-# OpenCode Unguarded v2.1.2 (revision 4)
+# OpenCode Unguarded v2.1.2 (revision 5)
 
 Derivative of OpenCode with built-in model-prompt guardrails removed and outbound
 telemetry integrations disabled at build time.
@@ -27,23 +27,35 @@ telemetry integrations disabled at build time.
 
 ## Lifecycle changes
 
-- Uninstall rejects an installation root that contains the profile, canonicalizes
-  paths, and stops only a verified owned service.
-- Installer requires a checksum entry for the exact archive, verifies recorded
-  hashes, preflights the command link, and rolls back a failed activation.
-- Live service discovery requires the derivative marker and refuses to signal a
-  PID the registered endpoint does not confirm.
-- Direct binary execution uses the candidate profile instead of stock storage.
-- `OPENCODE_DB` overrides, including `:memory:`, are honored inside the profile.
+- Build identity, installation identity, and process-lifetime identity are
+  separate and all compiled or recorded locally, never environment-controlled.
+- Live discovery and termination require a verified owner: a 404, an
+  unauthenticated response, a mismatched PID, another derivative revision, or
+  another installation all refuse instead of signalling anything.
+- A provably exited owner's stale registration is cleared without signalling a
+  reused PID.
+- Uninstall proves the running executable belongs to the installation it removes,
+  binds the service to that installation, aborts if the service will not stop,
+  and keeps profile data.
+- The installer requires a checksum entry for the exact archive, mandatory
+  executable and launcher hashes, preflights the command directory and link,
+  and rolls back every post-activation failure.
+- `--dry-run` writes nothing: no directory, log, lock, migration, or registration
+  change, and no service is stopped.
+- Direct `libexec/opencode` execution applies the same profile and database
+  containment as the launcher.
+- Patch application verifies real Git commit objects and refuses a synthesized
+  HEAD or an archive that cannot prove the full tree.
 
 - Every upstream update route is refused at the shared updater boundary,
   including `--method`, startup checks, and TUI updates.
 - The derivative identity is compiled into the binary and cannot be changed by
   environment or configuration.
-- Service registrations carry a derivative marker; a stock registration with the
-  same version is not adopted.
-- `uninstall` removes only the derivative installation and keeps profile data.
-- `--version` reports `v2.1.2-unguarded.4`.
+- Service registrations carry the distribution, revision, and installation;
+  neither stock nor another derivative revision is adopted.
+- `uninstall` removes only the verified derivative installation and keeps profile
+  data.
+- `--version` reports `v2.1.2-unguarded.5`.
 
 ## Preserved
 
@@ -68,9 +80,11 @@ training, and user-installed plugins are unaffected.
 - Source type checks pass for util, core, cli, app, and desktop.
 - Derivative tests and affected upstream suites pass.
 - A stock binary built from the same pin is observed sending telemetry to a local
-  OTLP collector; the candidate sends none.
-- The packaged archive, installer, replacement, rollback, and uninstall paths are
-  tested against the built binary.
+  OTLP collector during a real session against an offline model stub; the
+  candidate sends none, and the harness fails if either binary crashes or the
+  session cannot complete.
+- The extracted release archive is installed into a disposable HOME, verified,
+  used for a real session, and uninstalled, including while its service runs.
 
 ## Install
 

@@ -4,7 +4,17 @@ import { contenderPool, spawnServiceContender } from "../service-contender.js"
 import { defaultEnsureTiming, ensureTiming, type EnsureTiming } from "../service-timing.js"
 import { matchesVersion } from "../service-version.js"
 import { PtyHandoff } from "../pty-handoff.js"
-import { decide, fallback, headers, ownedByThisBuild, probeResult, same } from "../service-probe.js"
+import {
+  decide,
+  fallback,
+  headers,
+  isDerivative,
+  isOwnershipConflict,
+  ownedByThisBuild,
+  ownerExited,
+  probeResult,
+  same,
+} from "../service-probe.js"
 
 export * from "../service.js"
 export { headers }
@@ -86,6 +96,10 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
           pool.evict(service.info.pid)
         }
       } else {
+        // A registration naming another build or installation is not a missing
+        // service: spawning a contender would either fail on the port or make
+        // the mismatch harder to see. Report it instead.
+        if (registration.info !== undefined && isOwnershipConflict(registration)) throw ownershipError(registration)
         const failed = pool.reap()
         if (failed !== undefined) throw failed
         if (pool.shouldRecruit(registration.info !== undefined)) {
@@ -104,12 +118,34 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
 export async function stop(options: StopOptions = {}) {
   const info = await read(options.file)
   // Terminal handoff is best-effort; it must never keep the old service running.
+  // A derivative build also refuses to prepare handoff state for an owner it
+  // cannot verify, so an unrelated process is never touched.
+  if (isDerivative() && info !== undefined && options.pty === "handoff") {
+    await requireVerifiedOwner(info, options, defaultEnsureTiming.requestTimeout)
+  }
   await (
     options.pty === "handoff" && info !== undefined
       ? PtyHandoff.prepare(options.file ?? fallback(), info, defaultEnsureTiming.requestTimeout)
       : PtyHandoff.clear(options.file ?? fallback())
   ).catch((cause: unknown) => console.warn("Failed to prepare persistent terminals for replacement", cause))
   if (info !== undefined) await terminate(info, options, ensureTiming(options))
+}
+
+async function requireVerifiedOwner(info: Info, options: { readonly file?: string }, timeout: number) {
+  const probe = await probeResult(info, timeout)
+  if (probe.status !== "verified" || probe.service === undefined)
+    throw new Error(
+      `refusing to stop service pid ${info.pid}: the registered endpoint did not prove it is this owner` +
+        `${probe.reason === undefined ? "" : ` (${probe.reason})`}. ` +
+        `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
+    )
+}
+
+function ownershipError(outcome: { readonly reason?: string }) {
+  return new Error(
+    `The registered background service belongs to a different OpenCode build or installation` +
+      `${outcome.reason === undefined ? "" : ` (${outcome.reason})`}. Stop it, then start this build.`,
+  )
 }
 
 async function read(file?: string) {
@@ -154,13 +190,31 @@ async function waitUntilStopped(pid: number, timing: EnsureTiming) {
 async function terminate(info: Info, options: { readonly file?: string }, timing: EnsureTiming) {
   const current = await read(options.file)
   if (current === undefined || !same(current, info)) return
-  // A stale registration can outlive its process; only signal a PID that the
-  // registered endpoint still reports as its own.
-  if ((await probeResult(info, timing.requestTimeout)).service === undefined)
-    throw new Error(
-      `refusing to stop service pid ${info.pid}: the registered endpoint did not confirm it is the owner. ` +
-        `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
-    )
+  // opencode-unguarded never signals a PID that is not proven to be this
+  // registered owner. Stock builds keep upstream recovery, which deliberately
+  // replaces an unresponsive owner that cannot answer.
+  if (isDerivative()) {
+    // A provably exited owner leaves only a stale registration. Clearing it is
+    // safe and does not signal anything, so recovery is not blocked forever.
+    if (ownerExited(info)) {
+      const latest = await read(options.file)
+      if (latest !== undefined && same(latest, info)) await rm(options.file ?? fallback(), { force: true })
+      return
+    }
+    const probe = await probeResult(info, timing.requestTimeout)
+    if (probe.status !== "verified" || probe.service === undefined)
+      throw new Error(
+        `refusing to stop service pid ${info.pid}: the registered endpoint did not prove it is this owner` +
+          `${probe.reason === undefined ? "" : ` (${probe.reason})`}. ` +
+          `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
+      )
+    // When the owner reports a start time, require the registration to agree so
+    // a reused PID is never signalled.
+    if (info.startTime !== undefined && probe.service.startTime !== info.startTime)
+      throw new Error(
+        `refusing to stop service pid ${info.pid}: its process start time no longer matches the registration.`,
+      )
+  }
   signal(info.pid, "SIGTERM")
   // The registration can disappear or change hands before this process exits. Only the PID we
   // signalled can tell us whether it has stopped, so escalate based on that process.

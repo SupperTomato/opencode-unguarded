@@ -171,6 +171,7 @@ jobs:
             packages/cli/test/fixture/unguarded-updater.ts \
             packages/cli/test/fixture/unguarded-service.ts \
             packages/client/test/unguarded-ownership.test.ts \
+            packages/client/test/unguarded-termination.test.ts \
             packages/util/test/unguarded-roots.test.ts; do
             cp "$DERIVATIVE_ROOT/$file" "opencode-src/$file"
             test -s "opencode-src/$file" || { echo "missing derivative test file: $file" >&2; exit 1; }
@@ -182,7 +183,7 @@ jobs:
 
       - name: Run affected client suites
         working-directory: opencode-src/packages/client
-        run: bun test test/unguarded-ownership.test.ts
+        run: bun test test/unguarded-ownership.test.ts test/unguarded-termination.test.ts
 
       - name: Run affected util derivatives
         working-directory: opencode-src/packages/util
@@ -247,11 +248,22 @@ jobs:
           cp packaging/linux-x64/install.sh "$STAGE/install.sh"
           cp packaging/linux-x64/uninstall.sh "$STAGE/uninstall.sh"
           cp packaging/linux-x64/telemetry-harness.sh "$STAGE/telemetry-harness.sh"
+          cp packaging/linux-x64/model-stub.ts "$STAGE/model-stub.ts"
+          cp packaging/linux-x64/acceptance.sh "$STAGE/acceptance.sh"
           cp script/unguarded/collector.ts "$STAGE/collector.ts"
           chmod +x "$STAGE/libexec/opencode" "$STAGE/bin/opencode-unguarded" \
-            "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/telemetry-harness.sh"
+            "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/telemetry-harness.sh" "$STAGE/acceptance.sh"
           cp LICENSE "$STAGE/LICENSE"
           cp THIRD_PARTY_NOTICES.md "$STAGE/THIRD_PARTY_NOTICES.md"
+          # A published package must be installable and removable on its own:
+          # the packaged installer, launcher, and uninstaller are exercised from
+          # the extracted archive before it is published.
+          ACCEPT="$RUNNER_TEMP/acceptance"
+          rm -rf "$ACCEPT"
+          mkdir -p "$ACCEPT"
+          tar xzf opencode-unguarded-linux-x64.tar.gz -C "$ACCEPT"
+          cp packaging/linux-x64/model-stub.ts "$ACCEPT/opencode-unguarded/model-stub.ts"
+          bash "$ACCEPT/opencode-unguarded/acceptance.sh" "$ACCEPT/opencode-unguarded" "$opencode-unguarded-linux-x64.tar.gz"
           jq -n \
             --arg v "$VERSION" \
             --arg c "$(jq -r .upstream.commit "manifests/$VERSION.json")" \

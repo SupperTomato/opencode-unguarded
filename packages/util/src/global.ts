@@ -60,24 +60,42 @@ export function make(input: Partial<Interface> = {}): Interface {
   }
 }
 
+const directories = (service: Interface) => [
+  service.data,
+  service.config,
+  service.state,
+  service.log,
+  service.bin,
+  service.repos,
+  service.tmp,
+]
+
 const acquire = (input: Partial<Interface>) =>
   Effect.gen(function* () {
     const service = Service.of(make(input))
-    yield* Effect.promise(() =>
-      Promise.all(
-        [service.data, service.config, service.state, service.log, service.bin, service.repos, service.tmp].map(
-          (directory) => fs.promises.mkdir(directory, { recursive: true }),
-        ),
-      ),
-    )
+    yield* Effect.promise(() => Promise.all(directories(service).map((directory) => fs.promises.mkdir(directory, { recursive: true }))))
     const canonicalTmp = yield* Effect.promise(() => fs.promises.realpath(service.tmp))
     return Service.of({ ...service, tmp: input.tmp ?? canonicalTmp })
+  })
+
+// A read-only acquisition creates nothing and resolves nothing. It exists for
+// `--dry-run`, whose contract is that the filesystem is unchanged, including a
+// profile that did not exist before. tmp is reported as configured rather than
+// canonicalized because canonicalizing requires the directory to exist.
+const acquireReadOnly = (input: Partial<Interface>) =>
+  Effect.gen(function* () {
+    const service = Service.of(make(input))
+    return Service.of({ ...service, tmp: input.tmp ?? service.tmp })
   })
 
 const layer = Layer.effect(
   Service,
   Effect.suspend(() => acquire({ config: process.env.OPENCODE_CONFIG_DIR ?? Path.config })),
 )
+
+/** A Global layer that inspects without creating directories. */
+export const readOnlyLayer = (input: Partial<Interface> = {}) =>
+  Layer.effect(Service, acquireReadOnly({ config: process.env.OPENCODE_CONFIG_DIR ?? Path.config, ...input }))
 
 export const node = makeGlobalNode({ service: Service, layer: layer, deps: [] })
 

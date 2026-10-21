@@ -91,23 +91,16 @@ if (upstream) {
   })
 
   check("B2-apply-from-pristine", () => {
+    // Apply into a full copy of the pinned checkout so Git identity checks see
+    // real commit objects. A fabricated .git/HEAD would prove nothing, so this
+    // deliberately does not create one.
     const staged = fs.mkdtempSync(path.join(path.dirname(upstream), "unguarded-validate-"))
     try {
-      for (const entry of [...manifest.files, ...manifest.protected]) {
-        if ("pristine" in entry && entry.pristine === null) continue
-        const source = path.join(upstream, entry.file)
-        const target = path.join(staged, entry.file)
-        fs.mkdirSync(path.dirname(target), { recursive: true })
-        fs.copyFileSync(source, target)
-      }
-      fs.mkdirSync(path.join(staged, "packages/cli"), { recursive: true })
-      fs.copyFileSync(path.join(upstream, "packages/cli/package.json"), path.join(staged, "packages/cli/package.json"))
-      fs.mkdirSync(path.join(staged, ".git"), { recursive: true })
-      fs.writeFileSync(path.join(staged, ".git", "HEAD"), `${manifest.upstream.commit}\n`)
-      apply(staged, manifest)
+      copyTree(upstream, staged)
+      const changes = apply(staged, manifest)
       const errors = verify(staged, manifest)
       if (errors.length > 0) throw new Error(errors.join("; "))
-      return "pristine input produced the reviewed final bytes"
+      return `pristine input produced the reviewed final bytes (${changes.length} changed)`
     } finally {
       fs.rmSync(staged, { recursive: true, force: true })
     }
@@ -115,6 +108,15 @@ if (upstream) {
 } else {
   blocked("B1-pristine-identity", "no --upstream given; run with a checkout pinned to the manifest commit")
   blocked("B2-apply-from-pristine", "no --upstream given; run with a checkout pinned to the manifest commit")
+}
+
+/** Copy a checkout, excluding build output that the identity check never reads. */
+function copyTree(source: string, target: string) {
+  fs.cpSync(source, target, {
+    recursive: true,
+    dereference: false,
+    filter: (entry) => !entry.split("/").includes("node_modules") && !entry.split("/").includes("dist"),
+  })
 }
 
 for (const result of results) {

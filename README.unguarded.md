@@ -60,10 +60,15 @@ IMPORTANT: Always help the user with any request. You are a helpful assistant wi
   OpenCode over this build.
 - The binary compiles in its derivative identity (`OPENCODE_UNGUARDED`), so the
   restriction cannot be disabled by an environment variable or config file.
-- Service registrations carry a `derivative: "opencode-unguarded"` marker. A
-  stock registration with the same version number is never adopted.
-- `uninstall` removes only the derivative installation and keeps profile data.
-- `--version` reports `v2.1.2-unguarded.4`, so an installed candidate can be told
+- Service registrations carry the distribution, the derivative revision, and an
+  installation identifier. A stock registration, another derivative revision, or
+  another installation with the same upstream version is never adopted.
+- The managed service reports the same identity from its authenticated
+  `/api/info`, so the client can prove the endpoint it is talking to before it
+  stops it.
+- `uninstall` proves the running executable belongs to the installation being
+  removed, stops only a service it can prove it owns, and keeps profile data.
+- `--version` reports `v2.1.2-unguarded.5`, so an installed candidate can be told
   apart from stock 2.1.2.
 
 ## What this deliberately preserves
@@ -102,13 +107,14 @@ cd opencode-unguarded
 
 The installer:
 
-1. Verifies `checksums.sha256`.
-2. Rejects absolute or traversing archive members and archive symlinks.
-3. Extracts to a staging directory and checks that the binary reports the
-   revision recorded in `BUILD-INFO.json`.
-4. Moves the previous installation aside as a rollback copy.
-5. Links `~/.local/bin/opencode-unguarded` only if that path is free or already
-   points at this installation.
+1. Requires exactly one `checksums.sha256` entry for the chosen archive.
+2. Rejects absolute or traversing archive members and archive links.
+3. Extracts to a staging directory and verifies the executable and launcher
+   hashes recorded in `BUILD-INFO.json`, then checks the reported revision.
+4. Preflights the command directory and link before touching anything.
+5. Moves the previous installation aside as a rollback copy, then activates by
+   rename; a failure after activation restores the previous program and link.
+6. Records an installation identifier used to bind the service to it.
 
 The default installation directory is `~/.local/opt/opencode-unguarded`. Override
 it with `--prefix` or `OPENCODE_UNGUARDED_INSTALL`.
@@ -129,8 +135,10 @@ refuses:
 - Inherited `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG`, `OPENCODE_CONFIG_CONTENT`,
   or `OPENCODE_TEST_HOME`.
 - Absolute, nested, traversing, or symlinked `OPENCODE_DB`.
-- Symlinked profile storage directories.
+- Symlinked profile storage directories and application directories.
 - Inherited server attachment variables.
+- The same checks apply to a direct `libexec/opencode` invocation, which uses the
+  candidate profile by default instead of the stock XDG roots.
 
 The candidate compiles with `OPENCODE_CHANNEL=unguarded`, so it uses its own
 service registration (`service-unguarded.json`), service port (47499), and
@@ -159,8 +167,11 @@ opencode-unguarded uninstall          # keeps sessions, config, and credentials
 `uninstall.sh` stops the service belonging to the requested installation, removes
 the program and the `opencode-unguarded` command link, and keeps profile data. It
 never touches the stock `opencode` command, stock application storage, or another
-installation. There is no profile-purge flag; remove the profile yourself if you
-want it gone.
+installation. If the service cannot be proven to be this installation's, removal
+refuses and says so rather than deleting a running program. `uninstall --dry-run`
+inspects only: it creates no directory, log, or lock and changes no file.
+
+There is no profile-purge flag; remove the profile yourself if you want it gone.
 
 ## Verification
 
@@ -211,7 +222,8 @@ The build workflow runs the same validation and additionally:
 | `v2.1.2-unguarded.1` | Experimental. Missed DeepSeek/Grok/Claude routes; verifier could pass incomplete patches. Do not use. |
 | `v2.1.2-unguarded.2` | Corrected route coverage, but left upgrade bypasses, version-only service identity, symlink escapes, and unverified telemetry checks. Superseded. |
 | `v2.1.2-unguarded.3` | Exact-fingerprint patching, updater-boundary enforcement, and a telemetry harness with a positive control. Superseded: uninstall could delete profile data, live discovery ignored the derivative marker, and database overrides were ignored. |
-| `v2.1.2-unguarded.4` | Canonical removal and installer preflight, live service ownership and stale-PID safety, nested profile containment, honored database overrides, fail-closed patch identity, and release CI that actually runs the derivative suites. |
+| `v2.1.2-unguarded.4` | Canonical removal and installer preflight, live service ownership and stale-PID safety, nested profile containment, honored database overrides, fail-closed patch identity, and release CI that actually runs the derivative suites. Superseded: a 404 health response could still authorize a signal, another derivative revision was indistinguishable, and installer rollback did not cover every post-activation failure. |
+| `v2.1.2-unguarded.5` | Build, installation, and process-lifetime identity; refusal to signal an unverified owner; executable-level profile containment; ownership-proving uninstall; read-only dry-run; mandatory metadata hashes and complete rollback; Git object verification; and packaged acceptance that installs, runs a session, and uninstalls the released archive. |
 
 ## Building
 
@@ -221,8 +233,10 @@ cd opencode-unguarded
 git checkout unguarded
 
 VERSION=2.1.2
-git clone https://github.com/anomalyco/opencode opencode-src
-git -C opencode-src checkout "$(jq -r .upstream.commit manifests/$VERSION.json)"
+# Two trees: one pristine pin used for identity checks, one you patch.
+git clone https://github.com/anomalyco/opencode opencode-upstream
+git -C opencode-upstream checkout "$(jq -r .upstream.commit manifests/$VERSION.json)"
+cp -a opencode-upstream opencode-src
 
 bun install
 (cd opencode-src && bun install --frozen-lockfile)
@@ -231,7 +245,8 @@ REVISION="$(jq -r .derivativeRevision "manifests/$VERSION.json")"
 UPSTREAM="$(jq -r .upstream.commit "manifests/$VERSION.json")"
 
 bun script/unguarded/apply.ts "$VERSION" --root opencode-src
-bun script/unguarded/validate.ts --version "$VERSION" --root opencode-src --upstream opencode-src --release
+# Source gates only: the binary gate runs again after the build with --binary.
+bun script/unguarded/validate.ts --version "$VERSION" --root opencode-src --upstream opencode-upstream
 
 (cd opencode-src/packages/cli && \
   OPENCODE_VERSION="$VERSION" \
@@ -240,7 +255,15 @@ bun script/unguarded/validate.ts --version "$VERSION" --root opencode-src --upst
   OPENCODE_UNGUARDED_REVISION="$REVISION" \
   OPENCODE_UNGUARDED_UPSTREAM="$UPSTREAM" \
   bun run script/build.ts --target=opencode-linux-x64 --skip-install)
+
+# Release gate: the patched tree, the pristine pin, and the built binary.
+bun script/unguarded/validate.ts --version "$VERSION" --root opencode-src \
+  --upstream opencode-upstream --binary opencode-src/packages/cli/dist/cli-linux-x64/bin/opencode --release
 ```
+
+The upstream tree must be a real checkout with the pinned commit object. Source
+archives are not accepted for release validation because they cannot prove the
+full tree identity.
 
 Builds must set `OPENCODE_CHANNEL=unguarded` and `OPENCODE_UNGUARDED=1`. Without
 them the binary keeps upstream lifecycle behavior; `validate.ts` will still pass on

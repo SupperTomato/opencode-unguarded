@@ -156,7 +156,7 @@ function lineStart(handle: FileSystem.File, from: number) {
   })
 }
 
-const stderrLogger = Logger.make((options) => {
+export const stderrLogger = Logger.make((options) => {
   if (process.env.OPENCODE_PRINT_LOGS !== "1") return
   process.stderr.write(formatter().log(options) + "\n")
 })

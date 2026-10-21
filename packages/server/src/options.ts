@@ -9,6 +9,12 @@ export const ServerOptions = Schema.Struct({
       name: Schema.optional(Schema.String),
       version: Schema.optional(Schema.String),
       channel: Schema.optional(Schema.String),
+      // opencode-unguarded: distribution identity reported to clients. Stock
+      // builds leave these unset, and clients treat their absence as "cannot
+      // prove derivative ownership".
+      derivative: Schema.optional(Schema.String),
+      derivativeRevision: Schema.optional(Schema.String),
+      installation: Schema.optional(Schema.String),
     }),
   ),
   hostname: Schema.optional(Schema.String),

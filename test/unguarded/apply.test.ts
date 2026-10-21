@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import {
   apply,
+  applyRoot,
   loadManifest,
   patchDir,
   plan,
@@ -42,8 +43,12 @@ function upstreamFixture() {
   const pkg = path.join(source, "packages/cli/package.json")
   fs.mkdirSync(path.join(root, "packages/cli"), { recursive: true })
   fs.copyFileSync(pkg, path.join(root, "packages/cli/package.json"))
-  write(root, ".git/HEAD", `${manifest.upstream.commit}\n`)
   return root
+}
+
+/** Byte fixtures have no Git metadata; they exercise the transformation, not identity. */
+function patchBytes(root: string) {
+  return applyRoot(root, manifest, transforms(manifest))
 }
 
 function read(root: string, file: string) {
@@ -127,30 +132,66 @@ describe("upstream identity", () => {
   test("rejects a checkout with the wrong version", () => {
     const root = upstreamFixture()
     write(root, "packages/cli/package.json", JSON.stringify({ name: "@opencode/cli", version: "9.9.9" }))
-    expect(() => verifyUpstreamIdentity(root, manifest)).toThrow(/does not match manifest/)
+    expect(() => verifyUpstreamIdentity(root, manifest, { sourceArchive: true })).toThrow(/does not match manifest/)
   })
 
   test("rejects a checkout with the wrong package name", () => {
     const root = upstreamFixture()
     write(root, "packages/cli/package.json", JSON.stringify({ name: "@other/cli", version: manifest.upstream.version }))
-    expect(() => verifyUpstreamIdentity(root, manifest)).toThrow(/does not match manifest/)
+    expect(() => verifyUpstreamIdentity(root, manifest, { sourceArchive: true })).toThrow(/does not match manifest/)
   })
 
-  test("rejects a checkout at a different commit", () => {
+  test("accepts the pinned checkout, proven by real Git objects", () => {
+    const source = requireFixture(upstream, "upstream")
+    expect(verifyUpstreamIdentity(source, manifest)).toBe(true)
+  })
+
+  test("rejects a directory with no Git metadata unless archive bytes are explicitly allowed", () => {
+    expect(() => verifyUpstreamIdentity(upstreamFixture(), manifest)).toThrow(/no Git metadata/)
+  })
+
+  test("rejects a HEAD that names the pin but has no commit object", () => {
     const root = upstreamFixture()
-    write(root, ".git/HEAD", `${"0".repeat(40)}\n`)
-    expect(() => verifyUpstreamIdentity(root, manifest)).toThrow(/neither the pinned upstream commit/)
+    write(root, ".git/HEAD", `${manifest.upstream.commit}\n`)
+    expect(() => verifyUpstreamIdentity(root, manifest)).toThrow(/not a commit object/)
   })
 
-  test("accepts the pinned source", () => {
-    expect(verifyUpstreamIdentity(upstreamFixture(), manifest)).toBe(true)
+  test("rejects an unknown commit in real Git metadata", () => {
+    const source = requireFixture(upstream, "upstream")
+    const root = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "unguarded-git-"))
+    try {
+      // A real repository whose HEAD names a commit object that does not exist.
+      // The text looks like a pin; only object verification catches it.
+      const init = Bun.spawnSync(["git", "init", "-q", root])
+      expect(init.exitCode).toBe(0)
+      write(root, "packages/cli/package.json", fs.readFileSync(path.join(source, "packages/cli/package.json"), "utf8"))
+      const commit = Bun.spawnSync([
+        "git",
+        "-C",
+        root,
+        "-c",
+        "user.name=test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "fixture",
+      ])
+      expect(commit.exitCode).toBe(0)
+      fs.writeFileSync(path.join(root, ".git", "HEAD"), `${"b".repeat(40)}\n`)
+      expect(() => verifyUpstreamIdentity(root, manifest)).toThrow(/not a commit object/)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 
 describe("planning and application", () => {
   test("pristine source produces the reviewed final bytes", () => {
     const root = upstreamFixture()
-    const changes = apply(root, manifest)
+    const changes = patchBytes(root)
     expect(changes.length).toBe(manifest.files.length)
     expect(verify(root, manifest)).toEqual([])
     for (const entry of manifest.files) {
@@ -160,13 +201,13 @@ describe("planning and application", () => {
 
   test("a fully patched tree is a verified no-op", () => {
     const root = upstreamFixture()
-    apply(root, manifest)
-    expect(apply(root, manifest)).toEqual([])
+    patchBytes(root)
+    expect(patchBytes(root)).toEqual([])
   })
 
   test("a mixed pristine/final tree is rejected before any write", () => {
     const root = upstreamFixture()
-    apply(root, manifest)
+    patchBytes(root)
     const restored = manifest.files[0]!
     fs.copyFileSync(path.join(requireFixture(upstream, "upstream"), restored.file), path.join(root, restored.file))
     const before = read(root, manifest.files[1]!.file)
@@ -178,7 +219,7 @@ describe("planning and application", () => {
     const root = upstreamFixture()
     const entry = manifest.files.find((item) => item.file.endsWith("gpt.txt"))!
     write(root, entry.file, read(root, entry.file).replace("You are an AI agent", "You are an AI assistant"))
-    expect(() => apply(root, manifest)).toThrow(/neither pristine nor final/)
+    expect(() => patchBytes(root)).toThrow(/neither pristine nor final/)
   })
 
   test("a table of expected strings is not accepted as patch evidence", () => {
@@ -196,7 +237,7 @@ describe("planning and application", () => {
     }
     const existing = manifest.files.filter((entry) => entry.pristine !== null)
     const before = existing.map((entry) => read(root, entry.file))
-    expect(() => apply(root, broken)).toThrow(/computed output/)
+    expect(() => applyRoot(root, broken, transforms(manifest))).toThrow(/computed output/)
     expect(existing.map((entry) => read(root, entry.file))).toEqual(before)
   })
 
@@ -217,35 +258,32 @@ describe("planning and application", () => {
     ).toEqual(before)
   })
 
-  test("a worktree checkout is verified through its real Git metadata", () => {
+  test("a broken Git worktree pointer fails closed", () => {
     const root = upstreamFixture()
-    // Simulate a `.git` file pointing at unrelated metadata; identity must fail
-    // closed instead of silently accepting the source.
-    fs.rmSync(path.join(root, ".git"), { recursive: true, force: true })
     fs.writeFileSync(path.join(root, ".git"), "gitdir: /nonexistent/git-metadata\n")
-    expect(() => verifyUpstreamIdentity(root, manifest)).toThrow(/HEAD could not be read|does not match/)
+    expect(() => verifyUpstreamIdentity(root, manifest)).toThrow(/could not be read|not a commit object/)
   })
 
-  test("a synthesized HEAD without the commit object is rejected", () => {
+  test("archive bytes are rejected when a declared addition is already present", () => {
     const root = upstreamFixture()
-    const entry = manifest.files.find((item) => item.pristine !== null)!
-    write(root, entry.file, "unrelated source\n")
-    write(root, ".git/HEAD", `${"b".repeat(40)}\n`)
-    expect(() => verifyUpstreamIdentity(root, manifest)).toThrow(/neither the pinned upstream commit|not a descendant/)
+    const added = manifest.files.find((entry) => entry.pristine === null)!
+    write(root, added.file, "unexpected\n")
+    expect(() => verifyUpstreamIdentity(root, manifest, { sourceArchive: true })).toThrow(/already present/)
   })
 
-  test("a directory without Git metadata is accepted only for pinned bytes", () => {
+  test("archive bytes are accepted only when they match the reviewed fingerprints", () => {
     const root = upstreamFixture()
-    fs.rmSync(path.join(root, ".git"), { recursive: true, force: true })
-    expect(verifyUpstreamIdentity(root, manifest)).toBe(true)
+    expect(verifyUpstreamIdentity(root, manifest, { sourceArchive: true })).toBe(true)
     const entry = manifest.files.find((item) => item.pristine !== null)!
     write(root, entry.file, "unrelated source\n")
-    expect(() => verifyUpstreamIdentity(root, manifest)).toThrow(/does not match the pinned upstream/)
+    expect(() => verifyUpstreamIdentity(root, manifest, { sourceArchive: true })).toThrow(
+      /does not match the pinned upstream/,
+    )
   })
 
   test("a protected file change is rejected", () => {
     const root = upstreamFixture()
-    apply(root, manifest)
+    patchBytes(root)
     const protectedFile = manifest.protected[0]!
     write(root, protectedFile.file, `${read(root, protectedFile.file)}\n// changed\n`)
     expect(verify(root, manifest).join("\n")).toMatch(/protected file changed/)

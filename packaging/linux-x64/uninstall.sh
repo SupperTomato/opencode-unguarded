@@ -5,8 +5,9 @@
 #
 # Only the program directory and the command link that points at it are removed.
 # Sessions, credentials, configuration, and other profile data are never
-# touched. Stopping the service is delegated to the installation being removed,
-# not to whichever `opencode-unguarded` happens to be first on PATH.
+# touched. Ownership is proven by the installation's own metadata and executable;
+# stopping the service is delegated to the installation being removed, not to
+# whichever `opencode-unguarded` happens to be first on PATH.
 set -euo pipefail
 
 die() {
@@ -40,21 +41,33 @@ case "$profile" in
 esac
 
 [ -d "$prefix" ] || die "no installation at $prefix"
-[ -x "$prefix/libexec/opencode" ] || die "$prefix is not an opencode-unguarded installation"
-[ -x "$prefix/bin/opencode-unguarded" ] || die "$prefix is not an opencode-unguarded installation"
+[ -f "$prefix/BUILD-INFO.json" ] || die "$prefix is not an opencode-unguarded installation"
+[ "$(jq -r .derivative "$prefix/BUILD-INFO.json" 2>/dev/null)" = "opencode-unguarded" ] ||
+  die "$prefix is not an opencode-unguarded installation"
+[ -x "$prefix/libexec/opencode" ] || die "$prefix is missing libexec/opencode"
+[ -x "$prefix/bin/opencode-unguarded" ] || die "$prefix is missing bin/opencode-unguarded"
 
 prefix_real="$(cd -P "$prefix" && pwd)"
-profile_real="$(cd -P "$profile" 2>/dev/null && pwd || printf '%s' "$profile")"
+
+# A profile path that does not exist is compared lexically after normalization;
+# a missing profile must not be created just to be compared.
+if [ -d "$profile" ]; then
+  profile_real="$(cd -P "$profile" && pwd)"
+else
+  profile_real="$(realpath -m -- "$profile")"
+fi
 
 case "$prefix_real" in
   "$HOME/.local/share/opencode"|"$HOME/.local/share/opencode/"*) die "refusing to remove stock application storage" ;;
   /) die "refusing to remove the filesystem root" ;;
 esac
-# An installation that contains the profile cannot be removed without deleting
-# durable data, so refuse rather than silently destroying it.
+# An installation that contains (or is inside) the profile cannot be removed
+# without destroying durable data, so refuse in both directions.
 case "$profile_real" in
-  "$prefix_real"|"$prefix_real/"*)
-    die "refusing to remove $prefix_real: it contains the application profile $profile_real" ;;
+  "$prefix_real"|"$prefix_real/"*) die "refusing to remove $prefix_real: it contains the application profile $profile_real" ;;
+esac
+case "$prefix_real" in
+  "$profile_real"/*) die "refusing to remove $prefix_real: it is inside the application profile $profile_real" ;;
 esac
 
 link="$HOME/.local/bin/opencode-unguarded"
@@ -84,12 +97,10 @@ if [ "$force" -ne 1 ]; then
   esac
 fi
 
-# Stop the service belonging to this installation. The launcher supplies the
-# profile, so the CLI reads the candidate registration rather than stock state,
-# and the CLI refuses to proceed if the service will not stop.
+# Delegate removal to the exact installation being removed. It verifies that the
+# running executable belongs to that root, stops only a service it can prove it
+# owns, and reports failure instead of force-deleting.
 if ! OPENCODE_UNGUARDED_PROFILE="$profile_real" "$prefix_real/bin/opencode-unguarded" uninstall --force >/dev/null 2>&1; then
-  # The CLI removes the installation itself on success. If it failed, nothing
-  # was removed; report and stop rather than deleting a running installation.
   echo "uninstall.sh: the installation's own uninstall failed; nothing was removed" >&2
   echo "uninstall.sh: run it directly to see why:" >&2
   echo "  OPENCODE_UNGUARDED_PROFILE='$profile_real' '$prefix_real/bin/opencode-unguarded' uninstall --force" >&2
@@ -97,7 +108,6 @@ if ! OPENCODE_UNGUARDED_PROFILE="$profile_real" "$prefix_real/bin/opencode-ungua
 fi
 
 if [ ! -e "$prefix_real" ]; then
-  # The CLI already removed the program directory and its link.
   echo "Uninstalled opencode-unguarded"
   echo "Profile data kept at: $profile_real"
   exit 0

@@ -1,8 +1,9 @@
 import { confirm, intro, log, outro, spinner } from "@clack/prompts"
 import { Service } from "@opencode/client/effect/service"
 import { Global } from "@opencode/util/global"
-import { Effect, FileSystem, Schedule } from "effect"
+import { Effect, FileSystem, Option, Schedule, Schema } from "effect"
 import path from "node:path"
+import { UNGUARDED, UNGUARDED_IDENTITY } from "../../version"
 import { Commands } from "../commands"
 import { Runtime } from "../../framework/runtime"
 import { ServerConnection } from "../../services/server-connection"
@@ -10,7 +11,6 @@ import { RetainedImage } from "../../services/retained-image"
 import { Updater } from "../../services/updater"
 import { handlePromptErrors, prompt, requireInteractive } from "../../ui/prompt"
 import { errorMessage } from "../../util/error"
-import { UNGUARDED, UNGUARDED_IDENTITY } from "../../version"
 
 export default Runtime.handler(
   Commands.commands.uninstall,
@@ -191,9 +191,16 @@ const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (inp
   if (!(yield* fs.exists(launcher)) || !(yield* fs.exists(binary)))
     return yield* Effect.fail(new Error(`refusing to remove ${root}: it is not an opencode-unguarded installation`))
 
+  const rootReal = yield* fs.realPath(root)
+  // Prove this process belongs to that installation. An environment variable
+  // is only a claim; the executable's own location and the installation
+  // metadata are what make it true.
+  const verified = yield* verifyInstallationOwnership(fs, rootReal)
+  if (typeof verified === "string") return yield* Effect.fail(new Error(verified))
+  const ownership = verified
+
   // An installation that contains the profile cannot be removed without
   // deleting durable data. Refuse before listing or stopping anything.
-  const rootReal = yield* fs.realPath(root)
   // global.data is <profile>/data/opencode.
   const profileRoot = yield* fs.realPath(path.dirname(path.dirname(global.data)))
   if (rootReal === profileRoot || rootReal.startsWith(profileRoot + path.sep) || profileRoot.startsWith(rootReal + path.sep))
@@ -205,14 +212,27 @@ const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (inp
     )
 
   const registration = path.join(global.state, "service-unguarded.json")
-  const stop = yield* readOwnedRegistration(fs, registration)
+  const registered = yield* readRegistration(fs, registration)
+  // A registration that cannot be read is not evidence that no service exists.
+  // Only a genuinely absent file is. A malformed one is reported, and removal
+  // stops so the user can inspect it instead of deleting a running program.
+  if (registered._tag === "invalid")
+    return yield* Effect.fail(
+      new Error(
+        `refusing to remove ${rootReal}: ${registration} exists but is not a readable service registration. ` +
+          `Inspect or remove it, then uninstall.`,
+      ),
+    )
+  const owned = registered._tag === "valid" ? registered.info : undefined
+  const foreign = owned !== undefined && !registrationBelongsToInstallation(owned, ownership)
+  const stop = owned !== undefined && !foreign ? owned : undefined
   const command = yield* findCommandLink(fs, launcher, global.home)
 
   log.message("Sessions, credentials, configuration, and other profile data are kept.")
   log.info(`  Installation: ${rootReal}`)
   log.info(`  Service registration: ${registration}`)
   if (stop) log.info(`  Background service: pid ${stop.pid}`)
-  if (command) log.info(`  Command link: ${command}`)
+  if (foreign) log.warn(`The registered service belongs to another build or installation and is left untouched.`)
 
   if (input.dryRun) {
     log.warn("Dry run - no changes made")
@@ -264,18 +284,89 @@ const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (inp
   outro("Done")
 })
 
-// Only a registration written by this derivative may be signalled, and only
-// while it still describes the same live instance.
-const readOwnedRegistration = (fs: FileSystem.FileSystem, file: string) =>
-  fs.readFileString(file).pipe(
-    Effect.map((text) => JSON.parse(text) as { pid?: number; derivative?: string; version?: string; url?: string }),
-    Effect.map((found) =>
-      found.derivative === UNGUARDED_IDENTITY.name && Number.isInteger(found.pid) && (found.pid ?? 0) > 0
-        ? { pid: found.pid! }
-        : undefined,
-    ),
-    Effect.orElseSucceed(() => undefined),
-  )
+type Ownership = { readonly executable: string; readonly installationId?: string; readonly root: string }
+
+/**
+ * Prove that the running executable belongs to the installation being removed.
+ *
+ * The launcher sets OPENCODE_UNGUARDED_ROOT, but an environment variable can be
+ * set by anyone. Requiring both a UUID installation identifier from
+ * BUILD-INFO.json and a running executable inside that root means two decoy
+ * files at an arbitrary path are not enough: the process has to actually be
+ * the installed program.
+ */
+const verifyInstallationOwnership = (fs: FileSystem.FileSystem, root: string) =>
+  Effect.gen(function* () {
+    const metadata = path.join(root, "BUILD-INFO.json")
+    const text = yield* fs.readFileString(metadata).pipe(Effect.option)
+    if (Option.isNone(text)) return `refusing to remove ${root}: it has no BUILD-INFO.json`
+    const info = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(BuildInfo))(text.value).pipe(Effect.option)
+    if (Option.isNone(info)) return `refusing to remove ${root}: its BUILD-INFO.json is not valid installation metadata`
+    if (info.value.derivative !== UNGUARDED_IDENTITY.name)
+      return `refusing to remove ${root}: it is not an opencode-unguarded installation`
+    if (info.value.derivativeRevision !== UNGUARDED_IDENTITY.revision)
+      return (
+        `refusing to remove ${root}: it was installed by derivative revision ` +
+        `${info.value.derivativeRevision ?? "<unknown>"}, but this executable is revision ${UNGUARDED_IDENTITY.revision}`
+      )
+    const installed = yield* fs.realPath(path.join(root, "libexec", "opencode")).pipe(Effect.option)
+    const running = yield* fs.realPath(process.execPath).pipe(Effect.option)
+    if (Option.isNone(installed) || Option.isNone(running))
+      return `refusing to remove ${root}: its executable could not be resolved`
+    if (installed.value !== running.value)
+      return (
+        `refusing to remove ${root}: the running executable (${process.execPath}) is not the one installed there ` +
+        `(${installed.value})`
+      )
+    return {
+      executable: installed.value,
+      installationId: info.value.installationId,
+      root,
+    } satisfies Ownership
+  })
+
+const BuildInfo = Schema.Struct({
+  derivative: Schema.optional(Schema.String),
+  derivativeRevision: Schema.optional(Schema.String),
+  installationId: Schema.optional(Schema.String),
+})
+
+/** Whether a registration describes a service owned by this installation. */
+function registrationBelongsToInstallation(
+  registration: { readonly derivative?: string; readonly derivativeRevision?: string; readonly installation?: string },
+  ownership: Ownership,
+) {
+  if (registration.derivative !== UNGUARDED_IDENTITY.name) return false
+  if (registration.derivativeRevision !== UNGUARDED_IDENTITY.revision) return false
+  // When the installation recorded an identifier, the service must carry the
+  // same one. A different installation sharing a profile never matches.
+  if (ownership.installationId !== undefined) return registration.installation === ownership.installationId
+  // Legacy installations predate the identifier; fall back to "some service of
+  // this revision", and only because ownership above already proved the binary.
+  return registration.installation === undefined
+}
+
+const Registration = Schema.Struct({
+  pid: Schema.Int.check(Schema.isGreaterThan(0)),
+  derivative: Schema.optional(Schema.String),
+  derivativeRevision: Schema.optional(Schema.String),
+  installation: Schema.optional(Schema.String),
+})
+type Registration = typeof Registration.Type
+
+/** Read a registration, distinguishing absent from present-but-unreadable. */
+const readRegistration = (fs: FileSystem.FileSystem, file: string) =>
+  Effect.gen(function* () {
+    const exists = yield* fs.exists(file)
+    if (!exists) return { _tag: "absent" } as const
+    const text = yield* fs.readFileString(file).pipe(Effect.option)
+    if (Option.isNone(text)) return { _tag: "invalid" } as const
+    const decoded = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Registration))(text.value).pipe(
+      Effect.option,
+    )
+    if (Option.isNone(decoded)) return { _tag: "invalid" } as const
+    return { _tag: "valid", info: decoded.value } as const
+  })
 
 // Remove only a command link that still points at this installation's launcher.
 const findCommandLink = (fs: FileSystem.FileSystem, launcher: string, home: string) =>

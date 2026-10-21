@@ -6,6 +6,14 @@ export const ServerInfo = Schema.Struct({
   version: Schema.String,
   // 0 means the runtime has no OS process identity (e.g. workerd).
   pid: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  // opencode-unguarded: build and installation identity. Optional so clients
+  // still decode stock servers and older derivative revisions, which cannot
+  // prove derivative ownership.
+  derivative: Schema.optional(Schema.String),
+  derivativeRevision: Schema.optional(Schema.String),
+  installation: Schema.optional(Schema.String),
+  // Operating-system process start time, used to detect a reused PID.
+  startTime: Schema.optional(Schema.String),
   urls: Schema.Array(Schema.String),
   paths: Schema.Struct({
     tmp: Schema.String,

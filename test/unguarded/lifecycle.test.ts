@@ -66,12 +66,9 @@ describe("lifecycle verification", () => {
   test("removing the registration ownership marker is detected", () => {
     const root = fixture()
     rewrite(root, "packages/cli/src/services/service-registration.ts", (content) =>
-      content.replace(
-        "...(UNGUARDED ? { derivative: UNGUARDED_IDENTITY.name } : {}),",
-        "",
-      ),
+      content.replace("derivative: options.derivative,", ""),
     )
-    expect(verifyServiceOwnership(root).join("\n")).toMatch(/not marked as derivative-owned/)
+    expect(verifyServiceOwnership(root).join("\n")).toMatch(/not marked with the derivative build identity/)
   })
 
   test("restoring stock service.json migration is detected", () => {

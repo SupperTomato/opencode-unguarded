@@ -4,7 +4,13 @@ import { NodeServices } from "@effect/platform-node"
 import { Service } from "@opencode/client/effect/service"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
-import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_VERSION } from "./version"
+import {
+  OPENCODE_ARTIFACT,
+  OPENCODE_CHANNEL,
+  OPENCODE_VERSION,
+  UNGUARDED,
+  UNGUARDED_IDENTITY,
+} from "./version"
 import { AppProcess } from "@opencode/util/process"
 import { randomBytes, randomUUID } from "node:crypto"
 import { Effect, Option, Redacted, Schema } from "effect"
@@ -18,6 +24,8 @@ import { ServiceRegistration } from "./services/service-registration"
 import { RemoteTunnel } from "./services/remote-tunnel"
 import { WebUi } from "./services/web-ui"
 import { databasePath } from "./database-path"
+import { Installation } from "./services/installation"
+import { ProcessIdentity } from "@opencode/util/process-identity"
 
 export type Mode = "default" | "service" | "stdio"
 
@@ -95,6 +103,19 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
             : randomBytes(32).toString("base64url")
       if (!password) return yield* Effect.fail(new Error("Missing server password"))
       const instanceID = randomUUID()
+      // opencode-unguarded: a managed service advertises the build and
+      // installation that owns it. Stock builds leave these unset, and clients
+      // treat their absence as unproven ownership.
+      const installation = UNGUARDED ? Installation.installationIdentity() : undefined
+      const startTime = UNGUARDED ? ProcessIdentity.processStartTime() : undefined
+      const derivative =
+        installation === undefined
+          ? {}
+          : {
+              derivative: UNGUARDED_IDENTITY.name,
+              derivativeRevision: UNGUARDED_IDENTITY.revision,
+              installation: installation.id,
+            }
       const transform = yield* WebUi.handler()
       const remote = { urls: [] as ReadonlyArray<string> }
       const launch = start(
@@ -103,6 +124,7 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
             name: process.env.OPENCODE_CLIENT ?? OPENCODE_ARTIFACT,
             version: OPENCODE_VERSION,
             channel: OPENCODE_CHANNEL,
+            ...derivative,
           },
           hostname,
           port,
@@ -154,6 +176,8 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
                     id: instanceID,
                     file: serviceOptions.file,
                     shutdown,
+                    ...derivative,
+                    ...(startTime === undefined ? {} : { startTime }),
                   })
                 }),
             },

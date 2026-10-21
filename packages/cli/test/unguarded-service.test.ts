@@ -3,6 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { ServiceConfig } from "../src/services/service-config"
+import { UNGUARDED_IDENTITY } from "../src/version"
 
 /**
  * The derivative must never adopt a stock registration. These tests exercise
@@ -25,7 +26,7 @@ function run(operation: string) {
       "--define",
       "OPENCODE_UNGUARDED=true",
       "--define",
-      'OPENCODE_UNGUARDED_REVISION="3"',
+      'OPENCODE_UNGUARDED_REVISION="5"',
       "--define",
       'OPENCODE_UNGUARDED_UPSTREAM="a517687fde98a7329ada3ae644a01a9fc6c4e99e"',
       script,
@@ -86,6 +87,7 @@ test("a derivative registration migrates only when marked", async () => {
         id: "derivative",
         version: "2.1.2",
         derivative: "opencode-unguarded",
+        derivativeRevision: "5",
         url: "http://127.0.0.1:47499",
         pid: process.pid,
         password: "own",
@@ -104,9 +106,23 @@ test("a matching version alone does not satisfy the ownership predicate", () => 
   expect(
     ServiceConfig.registrationBelongsToChannel({ derivative: undefined }, ServiceConfig.DERIVATIVE_CHANNEL),
   ).toBe(false)
+  // A revision-less registration from an unknown build is not ours either.
   expect(
     ServiceConfig.registrationBelongsToChannel({ derivative: "opencode-unguarded" }, ServiceConfig.DERIVATIVE_CHANNEL),
+  ).toBe(false)
+  expect(
+    ServiceConfig.registrationBelongsToChannel(
+      { derivative: "opencode-unguarded", derivativeRevision: UNGUARDED_IDENTITY.revision },
+      ServiceConfig.DERIVATIVE_CHANNEL,
+    ),
   ).toBe(true)
+  // Another derivative revision is a different build and cannot be migrated.
+  expect(
+    ServiceConfig.registrationBelongsToChannel(
+      { derivative: "opencode-unguarded", derivativeRevision: `${UNGUARDED_IDENTITY.revision}-other` },
+      ServiceConfig.DERIVATIVE_CHANNEL,
+    ),
+  ).toBe(false)
   // A stock channel accepts any registration, so the helper must not break stock behavior.
   expect(ServiceConfig.registrationBelongsToChannel({ derivative: undefined }, "latest")).toBe(true)
 })
