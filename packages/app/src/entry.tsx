@@ -54,7 +54,7 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
   window.addEventListener("load", () => void navigator.serviceWorker.register("/sw.js"), { once: true })
 }
 
-// opencode-unguarded: telemetry disabled at build time: browser error reporting removed.
+// opencode-unguarded: browser error reporting is removed at build time.
 
 if (root instanceof HTMLElement && root.dataset.opencodeMounted === undefined) {
   // Lazy chunks can import the entry chunk back under a distinct URL, so claim the root before async startup.

@@ -48,6 +48,8 @@ export type Info = {
   readonly id?: string
   /** OpenCode version served by the process. */
   readonly version?: string
+  /** Distribution that wrote this registration. Absent on stock OpenCode. */
+  readonly derivative?: string
   /** Base URL advertised by the service. */
   readonly url: string
   /** Operating system process identifier. */

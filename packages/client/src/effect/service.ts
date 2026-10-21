@@ -142,6 +142,7 @@ export const stop = Effect.fn("service.stop")(function* (options: StopOptions = 
 export const Info = Schema.Struct({
   id: Schema.optional(Schema.String),
   version: Schema.optional(Schema.String),
+  derivative: Schema.optional(Schema.String),
   url: Schema.String,
   pid: Schema.Int.check(Schema.isGreaterThan(0)),
   password: Schema.optional(Schema.String),

@@ -8,7 +8,14 @@ import { Commands } from "./commands/commands"
 import { Runtime } from "./framework/runtime"
 import { Observability } from "@opencode/util/observability"
 import { Updater } from "./services/updater"
-import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_LOCAL, OPENCODE_VERSION } from "./version"
+import {
+  OPENCODE_ARTIFACT,
+  OPENCODE_CHANNEL,
+  OPENCODE_LOCAL,
+  OPENCODE_VERSION,
+  UNGUARDED_IDENTITY,
+  UNGUARDED,
+} from "./version"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import { AppProcess } from "@opencode/util/process"
@@ -103,9 +110,14 @@ Effect.gen(function* () {
     version: OPENCODE_VERSION,
     channel: OPENCODE_CHANNEL,
     local: OPENCODE_LOCAL,
+    derivative: UNGUARDED ? UNGUARDED_IDENTITY : undefined,
     args: process.argv.slice(2),
   })
-  return yield* Runtime.run(Commands, Handlers, { version: OPENCODE_VERSION })
+  // opencode-unguarded: report the derivative revision in --version so an
+  // installed candidate can be told apart from stock OpenCode 2.1.2.
+  return yield* Runtime.run(Commands, Handlers, {
+    version: UNGUARDED ? `${OPENCODE_VERSION}-unguarded.${UNGUARDED_IDENTITY.revision}` : OPENCODE_VERSION,
+  })
 }).pipe(
   Effect.catchCause((cause) =>
     Effect.logError("cli process failed", {

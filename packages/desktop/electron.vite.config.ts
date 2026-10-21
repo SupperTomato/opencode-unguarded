@@ -15,7 +15,7 @@ function resolveChannel() {
 
 const appPlugin = (await import("@opencode/app/vite")).default
 
-// opencode-unguarded: telemetry disabled at build time
+// opencode-unguarded: Sentry build plugin and sourcemap upload are removed.
 const sentry = false
 
 // Every module the entry reaches through static imports lands in one chunk. Automatic splitting

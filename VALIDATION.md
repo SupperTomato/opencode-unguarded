@@ -1,5 +1,9 @@
 # Validation record
 
+This file records what revision 3 verified, with the local evidence for each
+claim. CI runs the same gates; the workflow run URL is added to the release asset
+metadata, not to this file.
+
 ## Baseline
 
 | Field | Value |
@@ -9,151 +13,141 @@
 | Tag | v2.1.2 |
 | Commit | a517687fde98a7329ada3ae644a01a9fc6c4e99e |
 | npm integrity | `sha512-9mBVQTO3WkKzP300NtHuhmXkHTfR2JwFB0AKRGRw4Lt3SNEwo5V4pzXXrwlpRAHoQmINLPuFPGOmn1kxYZdmMQ==` |
+| Derivative revision | 3 |
+| Target | linux-x64 |
+| Toolchain | Bun 1.4.2, Node 24 |
 
 `@opencode/cli@2.1.2` is the current OpenCode distribution line. `opencode-ai@1.19.3`
-is the previous generation; the previous plan's transformation table does not apply
-to this source layout (no `packages/opencode/src/session/prompt/*.txt` exists).
+is the previous generation; its source layout does not apply here.
 
-## Source audit findings
+## Correction history
 
-- Model prompts live in `packages/core/src/plugin/system-prompt/` (6 files), plus a
-  shared `packages/core/src/session/runner/prompt/system.txt`.
-- `anthropic.txt` contains no guardrail text.
-- Agent prompts (`explore`, `title`, `summary`) are inline constants in
-  `packages/core/src/plugin/agent.ts`.
-- Plan mode is defined in `packages/core/src/plugin/plan.ts`.
-- Telemetry lives in `packages/util/src/observability{,/otlp}.ts` and
-  `packages/app/src/entry.tsx`.
-- evil-opencode's 9 `sed` patterns target a path absent from 2.1.2, so its
-  guardrail stage would be a no-op on this release.
-
-## Verification performed
-
-### Source
-
-| Check | Result |
+| Revision | Outcome |
 | --- | --- |
-| `bun script/unguarded/apply.ts 2.1.2` | Applied, verification passed |
-| Second application | No changes (idempotent) |
-| Partial-state rejection | Throws `partially patched` |
-| Missing-anchor rejection | Throws |
-| `bun script/unguarded/telemetry.ts` | Applied, verification passed |
-| Second telemetry application | No changes |
+| `.1` | Missed the shared base prompt and some template routes; verifiers accepted incomplete patches. Do not use. |
+| `.2` | Added route coverage but left these defects: `--method` reached the upstream installer; startup/TUI paths were unguarded; source identity was version-only; launcher and patch targets followed escaping symlinks; telemetry checks trusted markers; service migration accepted equal versions; uninstall used upstream cleanup; route tests duplicated routing. |
 
-### Build
+Revision 3 replaces the string-based approach with exact reviewed bytes and adds
+behavioral tests for each defect above.
 
-| Check | Result |
+## How to reproduce
+
+```bash
+bun install
+UNGUARDED_UPSTREAM=/path/to/checkout-at-a517687f bun test ./test/unguarded/
+bun script/unguarded/validate.ts --upstream /path/to/checkout-at-a517687f
+```
+
+With a built binary:
+
+```bash
+bun script/unguarded/validate.ts \
+  --upstream /path/to/pristine \
+  --binary /path/to/built/opencode \
+  --release
+```
+
+## Results
+
+### Source identity and patch application
+
+| Check | Evidence |
 | --- | --- |
-| `packages/util` typecheck | Pass |
-| `packages/core` typecheck | Pass |
-| `packages/app` typecheck | Pass |
-| `packages/desktop` typecheck | Pass |
-| Full `bun run check` (34 turbo tasks) | 34/34 pass, lint 0 errors |
-| `test/unguarded/` | 15 pass, 0 fail |
-| Linux x64 build | Success, reports `v2.1.2` |
+| Manifest schema validated | `test/unguarded/apply.test.ts`, `manifest.test.ts` |
+| Pristine fingerprints match the pin | `validate.ts B1`, `apply.test.ts` |
+| Pristine input produces reviewed bytes | `validate.ts B2`, `apply.test.ts` |
+| Already-patched tree is a no-op | `apply.test.ts` |
+| Mixed pristine/final tree rejected | `apply.test.ts` |
+| Drift retaining expected strings rejected | `apply.test.ts` |
+| Wrong commit, package, or version rejected | `apply.test.ts` |
+| Symlinked target or parent rejected | `apply.test.ts` |
+| Hard-linked target rejected | `apply.test.ts` |
+| Failure leaves every target untouched | `apply.test.ts` |
+| Protected file change rejected | `apply.test.ts` |
 
-### Telemetry egress (decisive)
+### Prompt routing and preservation
 
-Harness: local Bun server bound to 127.0.0.1, `OTEL_EXPORTER_OTLP_ENDPOINT` set,
-binary invoked with `--version` and `debug paths`, then collector inspected.
-
-| Binary | Collector hits |
+| Check | Evidence |
 | --- | --- |
-| Stock `@opencode/cli-linux-x64@2.1.2` | `["/v1/logs","/v1/logs","/v1/traces"]` |
-| This derivative (local build) | `[]` |
-| This derivative (downloaded release) | `[]` |
+| Directive exactly once for GPT, Astra, Kimi, Muse, Trinity, Claude, DeepSeek, Grok, unknown | `packages/core/test/plugin/unguarded-routing.test.ts` (production plugin hooks and real renderer) |
+| Family-specific removals present | same |
+| Custom agent prompt preserved | same |
+| Compaction and generate hooks routed | same |
+| Tool guidance rendered | same |
+| Claude appendix unmodified and unmarked | `manifest.test.ts` |
+| Permission, plan, explore files byte-identical | protected fingerprints in `manifests/2.1.2.json`, `validate.ts`, upstream suites |
+| Toolchain type checks | `bun run typecheck` (34/34 tasks) |
 
-The stock control proves the harness detects real egress.
+### Lifecycle
 
-### Artifact
-
-| Check | Result |
+| Check | Evidence |
 | --- | --- |
-| Release `v2.1.2-unguarded.1` | Published |
-| `sha256sum -c checksums.sha256` | OK |
-| Archive contents | `bin/`, `libexec/`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `BUILD-INFO.json` |
-| `opencode-unguarded --version` | `opencode v2.1.2` |
-| Banned string scan | All zero |
-| `no restrictions` present | 3 occurrences |
+| `upgrade` refuses without spawning | `packages/cli/test/unguarded-updater.test.ts` (`upgrade` with all eight methods) |
+| `--method` cannot bypass | same |
+| `latest`, `run`, `check`, `apply` refuse or report unavailable | same |
+| `removal` not offered | same |
+| A stock build still upgrades (control) | same |
+| Command-level refusal before method detection | `test/unguarded/lifecycle.test.ts` |
+| Registration carries derivative marker | `packages/cli/test/unguarded-service.test.ts` |
+| Equal-version stock registration not adopted | same |
+| Derivative registration migrates | same |
+| Derivative port/filename | same |
+| Derivative removal requires installation root and ownership | `lifecycle.test.ts`, `install.test.ts` |
 
-### Isolation
+### Launcher and packaging
 
-Installed side-by-side as `opencode-unguarded` while the existing `opencode`
-remained at 1.19.3 with unchanged sha256 `29eec08d…`.
-
-| Path | Candidate |
+| Check | Evidence |
 | --- | --- |
-| data | `~/.local/share/opencode-unguarded/profile/data/opencode` |
-| config | `~/.local/share/opencode-unguarded/profile/config/opencode` |
-| state | `~/.local/share/opencode-unguarded/profile/state/opencode` |
-| db | `~/.local/share/opencode-unguarded/profile/data/opencode/opencode.db` |
+| Profile inside stock storage rejected | `test/unguarded/launcher.test.ts` |
+| Inherited config/home overrides rejected without creating a profile | same |
+| Absolute, nested, traversing, symlinked DB rejected | same |
+| Symlinked profile storage rejected | same |
+| Inherited server attachment rejected | same |
+| Canonical XDG paths exported | same |
+| Archive checksum, shape, and symlink checks | `test/unguarded/install.test.ts` |
+| Embedded revision must match metadata | same |
+| Unrelated command link not replaced | same |
+| Replacement keeps rollback copy | same |
+| Uninstall keeps profile and stock command | same |
 
-An inherited absolute `OPENCODE_DB` pointing at the production database is
-rejected with a non-zero exit.
+### Telemetry
 
-### Functional
-
-`opencode-unguarded run "What does math.py's add function do?"` in a disposable
-repository completed with tool use (Glob, Read) and a correct answer.
-
-## Known limitations
-
-- Only Linux x64 is built.
-- Provider-side moderation and model behavior are outside the patch's control.
-- Custom agent prompts replace the built-in template, so the injected directive
-  does not apply to agents that define their own `system`.
-- The binary still contains inert `OtlpLogger` / `/v1/traces` strings pulled in by
-  the `effect` package's observability barrel; runtime egress is zero, which is
-  the meaningful property.
-
----
-
-# Revision .2 — correction record
-
-`v2.1.2-unguarded.1` was experimental and is superseded. The audit reproduced
-these defects; each is now covered by a regression test.
-
-| Audit finding | Defect | Fix | Test |
-| --- | --- | --- | --- |
-| C | `verify`/`fullyApplied` skipped `replace` actions, approving incomplete patches | Require original absence + replacement presence; reject partial state | `manifest.test.ts` state contract |
-| C | No manifest validation; absolute/traversal paths accepted | Validate structure, semver, SHA, ids, actions; contain paths to root | `manifest.test.ts` validation |
-| C | Unsupported checkout accepted | `verifyUpstreamIdentity` requires matching version | `manifest.test.ts` identity |
-| D | DeepSeek/Grok/Claude never received the directive | Inject into shared `system.txt`; Claude inherits via append | `routes.test.ts` |
-| E | Verifier passed on empty/nonexistent roots | Require checkout identity and every target file | `telemetry.test.ts` |
-| E | Marker comment trusted as proof | Verify behavior; ignore markers | `telemetry.test.ts` |
-| E | Dynamic Sentry import undetected | Detect static + dynamic imports and construction | `telemetry.test.ts` |
-| E | First pass differed from second (app Vite) | Single-pass determinism | `telemetry.test.ts` |
-| F | Inherited config env escaped the profile | Launcher refuses config overrides | manual + launcher |
-| F | Relative `..` DB traversal accepted | Launcher rejects `..` and absolute DB | manual |
-| F | Service port collided with stock V2 | Distinct channel, port 47499, distinct DB | live coexistence |
-| G | Upgrade ran the upstream installer | Refuse with derivative instructions | live `upgrade` |
-| H | CI tested the derivative checkout, not the built source | `UNGUARDED_SOURCE_ROOT` + `--check` on `opencode-src` | CI |
-| I | Provenance omitted derivative identity | `BUILD-INFO.json` records commit, manifest, run, toolchain | release |
-
-## Verified on the downloaded `v2.1.2-unguarded.2` artifact
-
-| Check | Result |
+| Check | Evidence |
 | --- | --- |
-| `sha256sum -c checksums.sha256` | OK |
-| `--version` | `opencode v2.1.2` |
-| `no restrictions` in binary | 4 occurrences (shared base + 3 templates + …) |
-| All banned strings | 0 |
-| Database path | `opencode-unguarded.db` |
-| OTLP collector with endpoint set | `HITS:[]` |
-| Inherited `OPENCODE_CONFIG_DIR` | rejected |
-| Absolute `OPENCODE_DB` | rejected |
-| `OPENCODE_DB` with `..` | rejected |
-| `upgrade` | refuses upstream installer |
-| Stock V2 + candidate simultaneously | both listening (49374 and 47499) |
-| Functional task | correct answer via Glob + Read |
-| Stock `opencode` unchanged | `1.19.3`, sha256 `29eec08d…` |
+| Exporter-construction markers absent from source | `test/unguarded/telemetry.test.ts` |
+| Decoy comments and dynamic imports rejected | same |
+| Local logging preserved | same |
+| Binary contains no exporter or Sentry wiring | `telemetry.ts --binary`, `validate.ts A4` |
+| Stock binary emits telemetry through the harness | `packaging/linux-x64/telemetry-harness.sh` positive control |
+| Candidate emits none | same |
 
-## Known limitations
+Local run of the harness:
 
-- Linux x64 only.
-- Provider-side moderation is unaffected.
-- Custom agent prompts replace built-in instructions, so the directive does not
-  apply to agents that define their own `system`.
-- Inert `OtlpLogger` / `/v1/traces` strings remain in the binary from the `effect`
-  observability barrel; runtime egress is zero, which is the tested property.
-- The candidate does not self-update; updates are manual from this repository.
+```text
+candidate hits: []
+stock hits: ["/v1/logs","/v1/logs","/v1/traces","/v1/traces","/v1/traces","/v1/logs"]
+telemetry harness passed: stock emitted telemetry, candidate emitted none
+```
+
+### Runtime smoke
+
+| Check | Evidence |
+| --- | --- |
+| Built binary reports `v2.1.2-unguarded.3` | local build |
+| `debug paths` shows the candidate profile, DB, and state | local run through the installed launcher |
+| Stock 2.1.2 and candidate run simultaneously on separate ports | local run, both servers listening |
+| Installation and removal against the built binary | local `install.sh` / `uninstall.sh` run |
+
+## Known limits
+
+- The telemetry runtime check exercises CLI server startup. Browser and desktop
+  integrations are verified by source identity, focused source tests, and type
+  checks, not by a running browser or Electron process.
+- Project and managed configuration keep upstream loading behavior by design; they
+  are not redirected into the profile.
+- Provider-side moderation and model training are outside the client's control.
+- Byte-for-byte reproducible builds have not been demonstrated; the recorded
+  provenance ties an artifact to its source, manifest, toolchain, and workflow run
+  but does not claim independent rebuild equality.
+- Lifecycle destructiveness is tested with disposable installations and fixture
+  roots. The production installation receives only read-only identity checks.

@@ -12,8 +12,6 @@ export interface App {
   readonly channel: string
 }
 
-// opencode-unguarded: telemetry disabled at build time. Resource construction remains for API compatibility,
-// but no logger or trace exporter can be created by release binaries.
 function resourceAttributes() {
   const value = process.env.OTEL_RESOURCE_ATTRIBUTES
   if (!value) return {}
@@ -48,6 +46,8 @@ export function resource(app: App = { client: "opencode", version: "unknown", ch
   }
 }
 
+// opencode-unguarded: telemetry disabled at build time. Resource construction
+// remains for API compatibility, but no exporter can be created.
 export function loggers(_options: Options | undefined, _app: App) {
   return []
 }

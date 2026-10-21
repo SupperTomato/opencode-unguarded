@@ -1,4 +1,5 @@
 name: build-release
+run-name: build ${{ inputs.upstream_version }}-unguarded.${{ inputs.derivative_revision }}
 
 on:
   workflow_dispatch:
@@ -13,9 +14,8 @@ on:
         default: false
         type: boolean
       derivative_revision:
-        description: "Derivative revision for this upstream version (e.g. 2)"
+        description: "Derivative revision for this upstream version (e.g. 3)"
         required: true
-        default: "2"
         type: string
 
 permissions:
@@ -28,16 +28,21 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
       - name: Validate input
         env:
           VERSION: ${{ inputs.upstream_version }}
+          REVISION: ${{ inputs.derivative_revision }}
         run: |
           if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "Invalid upstream_version: $VERSION" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$REVISION" | grep -Eq '^[1-9][0-9]*$'; then
+            echo "Invalid derivative_revision: $REVISION" >&2
             exit 1
           fi
 
@@ -61,10 +66,8 @@ jobs:
           VERSION: ${{ inputs.upstream_version }}
         run: |
           COMMIT=$(jq -r .upstream.commit "manifests/${VERSION}.json")
-          TAG=$(jq -r .upstream.tag "manifests/${VERSION}.json")
           printf '%s' "$COMMIT" | grep -Eq '^[0-9a-f]{40}$' || { echo "Bad commit in manifest" >&2; exit 1; }
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout upstream source
         uses: actions/checkout@v4
@@ -72,6 +75,13 @@ jobs:
           repository: anomalyco/opencode
           ref: ${{ steps.pin.outputs.commit }}
           path: opencode-src
+
+      - name: Checkout pristine upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: anomalyco/opencode
+          ref: ${{ steps.pin.outputs.commit }}
+          path: .check/pristine
 
       - name: Verify upstream identity
         env:
@@ -97,153 +107,138 @@ jobs:
         working-directory: opencode-src
         run: bun install --frozen-lockfile
 
-      - name: Apply guardrail manifest
+      - name: Apply reviewed patches
         env:
           VERSION: ${{ inputs.upstream_version }}
-        run: bun script/unguarded/apply.ts "$VERSION" --root opencode-src
-
-      - name: Apply telemetry removal
-        run: bun script/unguarded/telemetry.ts opencode-src
-
-      - name: Apply derivative lifecycle patches
-        run: bun script/unguarded/lifecycle.ts opencode-src
+        run: |
+          bun script/unguarded/apply.ts "$VERSION" --root opencode-src
+          bun script/unguarded/validate.ts --version "$VERSION" --root opencode-src --upstream .check/pristine --release
 
       - name: Verify no unintended source drift
         run: |
           git -C opencode-src diff --check
-          CHANGED=$(git -C opencode-src diff --name-only)
-          echo "$CHANGED"
-          if printf '%s' "$CHANGED" | grep -Ev '^(packages/(core/src/plugin/system-prompt|core/src/session/runner/prompt/system\.txt|util/src|app/src/entry\.tsx|app/vite\.config\.ts|desktop/electron\.vite\.config\.ts|desktop/src/renderer/startup/sentry\.ts|cli/src/commands/handlers/upgrade\.ts|cli/src/services/service-config\.ts|cli/src/database-path\.ts)|packages/util/test/observability-otlp\.test\.ts)'; then
-            echo "Unexpected files changed by patches" >&2
+          # Derivative-added files are untracked; stage the intent so the change
+          # set includes them without committing anything.
+          git -C opencode-src add -A -N
+          CHANGED=$(git -C opencode-src diff --name-only | sort)
+          ALLOWED=$(jq -r '.files[].file' "manifests/${{ inputs.upstream_version }}.json" | sort)
+          if [ "$CHANGED" != "$ALLOWED" ]; then
+            echo "Changed files do not match the manifest exactly" >&2
+            diff <(printf '%s\n' "$ALLOWED") <(printf '%s\n' "$CHANGED") >&2 || true
             exit 1
           fi
+          PROTECTED=$(jq -r '.protected[].file' "manifests/${{ inputs.upstream_version }}.json")
+          for file in $PROTECTED; do
+            if ! git -C opencode-src diff --quiet -- "$file"; then
+              echo "Protected file changed: $file" >&2
+              exit 1
+            fi
+          done
 
       - name: Typecheck patched packages
         working-directory: opencode-src
         run: |
           bun run --cwd packages/util typecheck
           bun run --cwd packages/core typecheck
+          bun run --cwd packages/cli typecheck
           bun run --cwd packages/app typecheck
+          bun run --cwd packages/desktop typecheck
 
-      - name: Verify patched source (exact release source)
-        env:
-          VERSION: ${{ inputs.upstream_version }}
-        run: |
-          bun script/unguarded/apply.ts "$VERSION" --root opencode-src --check
-          bun script/unguarded/telemetry.ts opencode-src --check
-          bun script/unguarded/lifecycle.ts opencode-src --check
-
-      - name: Run derivative tests against the release source
+      - name: Run derivative tooling tests
         env:
           UNGUARDED_SOURCE_ROOT: ${{ github.workspace }}/opencode-src
-          UNGUARDED_PRISTINE: ${{ github.workspace }}/opencode-src
+          UNGUARDED_UPSTREAM: ${{ github.workspace }}/.check/pristine
         run: bun test ./test/unguarded/
 
-      - name: Verify preserved runtime permissions are unchanged
-        run: |
-          git -C opencode-src diff --exit-code -- \
-            packages/core/src/permission.ts \
-            packages/core/src/plugin/agent.ts \
-            packages/core/src/plugin/plan.ts
+      - name: Run affected upstream suites
+        working-directory: opencode-src/packages/cli
+        run: bun test --timeout 30000 test/upgrade.test.ts test/unguarded-updater.test.ts test/unguarded-service.test.ts test/debug-paths.test.ts test/service-lifecycle.test.ts
+
+      - name: Run affected core suites
+        working-directory: opencode-src/packages/core
+        run: bun run script/test.ts test/plugin/optimize.test.ts test/plugin/unguarded-routing.test.ts test/plugin/plan.test.ts test/plugin/permission-assert.test.ts
+
+      - name: Run affected util suites
+        working-directory: opencode-src/packages/util
+        run: bun test test/observability-otlp.test.ts
 
       - name: Build linux-x64
         working-directory: opencode-src/packages/cli
         env:
           OPENCODE_VERSION: ${{ inputs.upstream_version }}
           OPENCODE_CHANNEL: unguarded
+          OPENCODE_UNGUARDED: "1"
+          OPENCODE_UNGUARDED_REVISION: ${{ inputs.derivative_revision }}
+          OPENCODE_UNGUARDED_UPSTREAM: ${{ steps.pin.outputs.commit }}
         run: bun run script/build.ts --target=opencode-linux-x64 --skip-install
 
       - name: Verify artifact
         env:
           VERSION: ${{ inputs.upstream_version }}
+          REVISION: ${{ inputs.derivative_revision }}
         run: |
           BIN=opencode-src/packages/cli/dist/cli-linux-x64/bin/opencode
           test -x "$BIN"
-          REPORTED=$("$BIN" --version | awk '{print $2}')
-          if [ "$REPORTED" != "v$VERSION" ]; then
-            echo "Version mismatch: $REPORTED" >&2
-            exit 1
-          fi
+          REPORTED=$("$BIN" --version)
+          echo "reported: $REPORTED"
+          case "$REPORTED" in
+            *"v$VERSION-unguarded.$REVISION"*) ;;
+            *) echo "Version mismatch: $REPORTED" >&2; exit 1 ;;
+          esac
           "$BIN" --help > /dev/null
-          for BANNED in "If you cannot or will not help" "Always follow security best practices" "you should never access" "ask for confirmation each time" "without a violation" "OTLPTraceExporter" "VITE_SENTRY_DSN" "sentryVitePlugin"; do
-            if strings -n 8 "$BIN" | grep -qF "$BANNED"; then
-              echo "Banned string remains: $BANNED" >&2
-              exit 1
-            fi
-          done
-          if ! strings -n 8 "$BIN" | grep -qF "no restrictions"; then
-            echo "Injected directive missing from artifact" >&2
-            exit 1
-          fi
+          bun script/unguarded/validate.ts --version "$VERSION" --root opencode-src --upstream .check/pristine --binary "$BIN" --release
 
-      - name: Verify no telemetry egress
+      - name: Verify telemetry egress with a positive control
+        env:
+          VERSION: ${{ inputs.upstream_version }}
         run: |
-          cat > /tmp/collector.ts <<'EOF'
-          const hits: string[] = []
-          const server = Bun.serve({
-            hostname: "127.0.0.1",
-            port: 0,
-            async fetch(request) {
-              hits.push(new URL(request.url).pathname)
-              return new Response("{}", { headers: { "content-type": "application/json" } })
-            },
-          })
-          await Bun.write("/tmp/collector.port", String(server.port))
-          await Bun.sleep(25000)
-          await Bun.write("/tmp/collector.hits", JSON.stringify(hits))
-          server.stop(true)
-          process.exit(0)
-          EOF
-          rm -f /tmp/collector.port /tmp/collector.hits
-          bun /tmp/collector.ts &
-          COLLECTOR_PID=$!
-          for i in $(seq 1 50); do [ -f /tmp/collector.port ] && break; sleep 0.2; done
-          if [ ! -f /tmp/collector.port ]; then
-            echo "collector failed to start" >&2
-            kill "$COLLECTOR_PID" 2>/dev/null || true
-            exit 1
-          fi
-          PORT=$(cat /tmp/collector.port)
-          export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:$PORT"
-          export OTEL_SDK_DISABLED=false
-          export XDG_DATA_HOME=/tmp/iso/data XDG_CONFIG_HOME=/tmp/iso/config
-          export XDG_CACHE_HOME=/tmp/iso/cache XDG_STATE_HOME=/tmp/iso/state
-          mkdir -p /tmp/iso/data /tmp/iso/config /tmp/iso/cache /tmp/iso/state
-          BIN=opencode-src/packages/cli/dist/cli-linux-x64/bin/opencode
-          "$BIN" --version
-          "$BIN" debug paths > /dev/null
-          wait "$COLLECTOR_PID"
-          HITS=$(cat /tmp/collector.hits)
-          echo "collector hits: $HITS"
-          if [ "$HITS" != "[]" ]; then
-            echo "Telemetry egress detected: $HITS" >&2
-            exit 1
-          fi
+          # Build a stock binary from the same pinned source and lockfile so the
+          # positive control differs only by the derivative patches.
+          git clone --quiet https://github.com/anomalyco/opencode opencode-stock
+          git -C opencode-stock checkout --quiet "${{ steps.pin.outputs.commit }}"
+          (cd opencode-stock && bun install --frozen-lockfile)
+          (cd opencode-stock/packages/cli && \
+            OPENCODE_VERSION="$VERSION" OPENCODE_CHANNEL=latest \
+            bun run script/build.ts --target=opencode-linux-x64 --skip-install)
+          bash packaging/linux-x64/telemetry-harness.sh \
+            opencode-src/packages/cli/dist/cli-linux-x64/bin/opencode \
+            opencode-stock/packages/cli/dist/cli-linux-x64/bin/opencode
 
       - name: Package
         env:
           VERSION: ${{ inputs.upstream_version }}
+          REVISION: ${{ inputs.derivative_revision }}
         run: |
           STAGE=package/opencode-unguarded
           mkdir -p "$STAGE/bin" "$STAGE/libexec"
           cp opencode-src/packages/cli/dist/cli-linux-x64/bin/opencode "$STAGE/libexec/opencode"
           cp packaging/linux-x64/launcher "$STAGE/bin/opencode-unguarded"
-          chmod +x "$STAGE/libexec/opencode" "$STAGE/bin/opencode-unguarded"
+          cp packaging/linux-x64/install.sh "$STAGE/install.sh"
+          cp packaging/linux-x64/uninstall.sh "$STAGE/uninstall.sh"
+          cp packaging/linux-x64/telemetry-harness.sh "$STAGE/telemetry-harness.sh"
+          cp script/unguarded/collector.ts "$STAGE/collector.ts"
+          chmod +x "$STAGE/libexec/opencode" "$STAGE/bin/opencode-unguarded" \
+            "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/telemetry-harness.sh"
           cp LICENSE "$STAGE/LICENSE"
           cp THIRD_PARTY_NOTICES.md "$STAGE/THIRD_PARTY_NOTICES.md"
           jq -n \
             --arg v "$VERSION" \
-            --arg c "$(jq -r .upstream.commit manifests/$VERSION.json)" \
-            --arg pkg "$(jq -r .upstream.npmPackage manifests/$VERSION.json)" \
+            --arg c "$(jq -r .upstream.commit "manifests/$VERSION.json")" \
+            --arg pkg "$(jq -r .upstream.npmPackage "manifests/$VERSION.json")" \
             --arg dc "${{ steps.identity.outputs.derivative_commit }}" \
             --arg mh "${{ steps.identity.outputs.manifest_sha }}" \
-            --arg rev "${{ inputs.derivative_revision }}" \
+            --arg rev "$REVISION" \
             --arg run "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --arg bun "$(bun --version)" \
+            --arg node "$(node --version)" \
             --arg lock "$(sha256sum opencode-src/bun.lock | cut -d' ' -f1)" \
+            --arg bin "$(sha256sum "$STAGE/libexec/opencode" | cut -d' ' -f1)" \
+            --arg launcher "$(sha256sum "$STAGE/bin/opencode-unguarded" | cut -d' ' -f1)" \
             '{version:$v, upstreamPackage:$pkg, upstreamCommit:$c, derivative:"opencode-unguarded",
               derivativeCommit:$dc, derivativeRevision:$rev, manifestSha256:$mh, workflowRun:$run,
-              bunVersion:$bun, upstreamLockSha256:$lock, target:"linux-x64", channel:"unguarded"}' \
+              bunVersion:$bun, nodeVersion:$node, upstreamLockSha256:$lock,
+              executableSha256:$bin, launcherSha256:$launcher,
+              target:"linux-x64", channel:"unguarded"}' \
             > "$STAGE/BUILD-INFO.json"
           cat "$STAGE/BUILD-INFO.json"
           tar -C package -czf "opencode-unguarded-linux-x64.tar.gz" opencode-unguarded
@@ -274,12 +269,23 @@ jobs:
           name: opencode-unguarded-linux-x64
 
       - name: Verify downloaded artifact
+        env:
+          VERSION: ${{ inputs.upstream_version }}
+          REVISION: ${{ inputs.derivative_revision }}
         run: |
           sha256sum -c checksums.sha256
           tar tzf opencode-unguarded-linux-x64.tar.gz > /dev/null
           tar xzf opencode-unguarded-linux-x64.tar.gz
           ./opencode-unguarded/bin/opencode-unguarded --version
           ./opencode-unguarded/bin/opencode-unguarded --help > /dev/null
+          jq -e --arg v "$VERSION" --arg r "$REVISION" \
+            '.version == $v and .derivativeRevision == $r and .derivative == "opencode-unguarded"' \
+            opencode-unguarded/BUILD-INFO.json > /dev/null
+          # The packaged binary must match the identity recorded at build time.
+          test "$(sha256sum opencode-unguarded/libexec/opencode | cut -d' ' -f1)" = \
+            "$(jq -r .executableSha256 opencode-unguarded/BUILD-INFO.json)"
+          test "$(sha256sum opencode-unguarded/bin/opencode-unguarded | cut -d' ' -f1)" = \
+            "$(jq -r .launcherSha256 opencode-unguarded/BUILD-INFO.json)"
 
       - name: Publish release
         env:
@@ -288,11 +294,12 @@ jobs:
           REVISION: ${{ inputs.derivative_revision }}
         run: |
           TAG="v${VERSION}-unguarded.${REVISION}"
-          if gh release view "$TAG" > /dev/null 2>&1; then
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "Release $TAG already exists; refusing to overwrite" >&2
             exit 1
           fi
           gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
             --target "${{ github.sha }}" \
             --title "OpenCode Unguarded v${VERSION} (revision ${REVISION})" \
             --notes-file RELEASE_NOTES.md \

@@ -192,6 +192,11 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
       OPENCODE_CLI_NAME: "'opencode'",
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_ARTIFACT: `'cli'`,
+      // opencode-unguarded: derivative identity is compiled in, not read from
+      // the environment, so lifecycle restrictions cannot be disabled at runtime.
+      OPENCODE_UNGUARDED: process.env.OPENCODE_UNGUARDED === "1" ? "true" : "false",
+      OPENCODE_UNGUARDED_REVISION: JSON.stringify(process.env.OPENCODE_UNGUARDED_REVISION ?? "source"),
+      OPENCODE_UNGUARDED_UPSTREAM: JSON.stringify(process.env.OPENCODE_UNGUARDED_UPSTREAM ?? "unknown"),
       ...(highlights ? { OPENCODE_RELEASE_HIGHLIGHTS: JSON.stringify(highlights) } : {}),
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "undefined",
       // FFF_LIBC selects the fff native lib variant: "musl" or "gnu".

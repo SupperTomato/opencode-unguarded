@@ -1,172 +1,139 @@
 #!/usr/bin/env bun
 
 /**
- * Lifecycle patches for the derivative.
+ * Lifecycle verification for the derivative.
  *
- * These keep the candidate inside its own installation boundary:
- *  - `upgrade` must never run the upstream installer
- *  - the service identity must not collide with a stock install
+ * The reviewed lifecycle source is pinned by the manifest like every other
+ * patch target, so `apply.ts` is the single writer. This module verifies the
+ * invariants that must hold in the built source and the packaged artifacts:
  *
- * They are applied to the pinned upstream checkout at build time, like the
- * guardrail and telemetry patches, and verified fail-closed.
+ *  - every upstream update route is refused at the shared updater boundary
+ *  - registrations carry a derivative ownership marker
+ *  - the candidate uses its own channel, port, and database filename
  */
 
-import fs from "node:fs"
-import path from "node:path"
+import { cliRoot, exists, loadManifest, read, type Manifest } from "./lib/patch"
 
 export type Change = { file: string; reason: string }
 
-const MARKER = "opencode-unguarded: derivative lifecycle"
 const UPGRADE = "packages/cli/src/commands/handlers/upgrade.ts"
+const UPDATER = "packages/cli/src/services/updater.ts"
 const SERVICE_CONFIG = "packages/cli/src/services/service-config.ts"
+const REGISTRATION = "packages/cli/src/services/service-registration.ts"
+const UNINSTALL = "packages/cli/src/commands/handlers/uninstall.ts"
 const DATABASE_PATH = "packages/cli/src/database-path.ts"
+const VERSION = "packages/cli/src/version.ts"
 
-const CHANNEL = "unguarded"
 const PORT = 47499
+const DATABASE = "opencode-unguarded.db"
 
-function fail(message: string): never {
-  throw new Error(message)
-}
-
-function resolveTarget(root: string, file: string) {
-  const realRoot = fs.realpathSync(root)
-  const candidate = path.resolve(realRoot, file)
-  const relative = path.relative(realRoot, candidate)
-  if (relative.startsWith("..") || path.isAbsolute(relative)) fail(`refusing to touch ${file} outside ${root}`)
-  return candidate
-}
-
-function read(root: string, file: string) {
-  const full = resolveTarget(root, file)
-  if (!fs.existsSync(full)) fail(`missing file: ${file}`)
-  return fs.readFileSync(full, "utf8")
-}
-
-function update(root: string, file: string, reason: string, transform: (content: string) => string, changes: Change[]) {
-  const before = read(root, file)
-  const after = transform(before)
-  if (after === before) return
-  fs.writeFileSync(resolveTarget(root, file), after)
-  changes.push({ file, reason })
-}
-
-export function patchLifecycle(root: string) {
-  if (!fs.existsSync(resolveTarget(root, "packages/cli/package.json")))
-    fail(`not an OpenCode checkout: ${root}`)
-  const changes: Change[] = []
-
-  // 1. Refuse to hand control to the upstream installer.
-  update(
-    root,
-    UPGRADE,
-    "refuse upstream upgrade paths so the candidate cannot replace itself with stock OpenCode",
-    (content) => {
-      if (content.includes(MARKER)) return content
-      const anchor = '      intro("Upgrade")\n'
-      if (!content.includes(anchor)) fail(`${UPGRADE}: expected intro() call not found; refusing to guess`)
-      return content.replace(
-        anchor,
-        `${anchor}      // ${MARKER}: the derivative does not self-update through upstream.
-      if (!Option.getOrUndefined(input.method)) {
-        return yield* Effect.fail(
-          new Error(
-            [
-              "opencode-unguarded does not self-update through the upstream installer.",
-              "",
-              "Update this derivative from its own releases:",
-              "  https://github.com/SupperTomato/opencode-unguarded/releases",
-              "",
-              "Download the newer opencode-unguarded-linux-x64.tar.gz, verify checksums.sha256,",
-              "and replace this installation. Your profile at $OPENCODE_UNGUARDED_PROFILE is kept.",
-            ].join("\\n"),
-          ),
-        )
-      }
-`,
-      )
-    },
-    changes,
-  )
-
-  // 2. Give the candidate its own service registration, port, and database name.
-  update(
-    root,
-    SERVICE_CONFIG,
-    "assign the derivative a distinct service identity so it can run beside stock OpenCode",
-    (content) => {
-      if (content.includes(MARKER)) return content
-      const anchor = 'export function filename(channel = OPENCODE_CHANNEL) {\n'
-      if (!content.includes(anchor)) fail(`${SERVICE_CONFIG}: filename() not found; refusing to guess`)
-      let result = content.replace(
-        anchor,
-        `// ${MARKER}: a distinct channel keeps registrations, ports, and databases apart.\n` +
-          `export const DERIVATIVE_CHANNEL = "${CHANNEL}"\n\n` +
-          anchor,
-      )
-      const portAnchor = 'export function defaultPort(channel = OPENCODE_CHANNEL, platform = process.platform) {\n'
-      if (!result.includes(portAnchor)) fail(`${SERVICE_CONFIG}: defaultPort() not found; refusing to guess`)
-      result = result.replace(
-        portAnchor,
-        portAnchor +
-          `  if (channel === DERIVATIVE_CHANNEL) return ${PORT}\n`,
-      )
-      return result
-    },
-    changes,
-  )
-
-  update(
-    root,
-    DATABASE_PATH,
-    "use a derivative-specific database filename",
-    (content) => {
-      if (content.includes(MARKER)) return content
-      const anchor = "export function databasePath(data: string) {\n"
-      if (!content.includes(anchor)) fail(`${DATABASE_PATH}: databasePath() not found; refusing to guess`)
-      return content.replace(
-        anchor,
-        anchor +
-          `  // ${MARKER}: keep the derivative database separate from stock installs.\n` +
-          `  if (!process.env.OPENCODE_DB) return path.resolve(data, "opencode-unguarded.db")\n`,
-      )
-    },
-    changes,
-  )
-
-  return changes
-}
-
-export function verifyLifecycle(root: string) {
+/**
+ * The updater is the only place that can start an upstream installer. Every
+ * entry point must consult the compiled derivative flag, so a new caller cannot
+ * quietly bypass an earlier per-command guard.
+ */
+export function verifyUpdaterBoundary(root: string) {
   const errors: string[] = []
+  const updater = read(root, UPDATER)
+  for (const [name, pattern] of [
+    ["upgrade", /const upgrade = Effect\.fnUntraced\(function\* \(method: Method, input: string\) \{\s*if \(UNGUARDED\)/],
+    ["install", /const install = Effect\.fnUntraced\(function\* \(version: string\) \{\s*if \(UNGUARDED\)/],
+    ["run", /if \(UNGUARDED\) return undefined\s*\n\s*const result = yield\* inspect\(\)/],
+    ["check", /if \(UNGUARDED\)[\s\S]{0,120}type: "unavailable"/],
+    ["latest", /const latest = Effect\.fnUntraced\(function\* \(selected\?: Method\) \{\s*if \(UNGUARDED\) return yield\* Effect\.fail\(derivativeUpdateError\(\)\)/],
+    ["removal", /const removal = \(method: Method\) => \{\s*if \(UNGUARDED\) return undefined/],
+  ] as const) {
+    if (!pattern.test(updater)) errors.push(`${UPDATER}: ${name}() does not enforce the derivative boundary`)
+  }
+  if (!updater.includes("DERIVATIVE_UPDATE_MESSAGE"))
+    errors.push(`${UPDATER}: derivative update guidance is missing`)
 
   const upgrade = read(root, UPGRADE)
-  if (!upgrade.includes(MARKER)) errors.push(`${UPGRADE}: derivative upgrade guard missing`)
-  if (!upgrade.includes("does not self-update through the upstream installer"))
-    errors.push(`${UPGRADE}: derivative upgrade message missing`)
-
-  const service = read(root, SERVICE_CONFIG)
-  if (!service.includes(`export const DERIVATIVE_CHANNEL = "${CHANNEL}"`))
-    errors.push(`${SERVICE_CONFIG}: derivative channel missing`)
-  if (!new RegExp(`if \\(channel === DERIVATIVE_CHANNEL\\) return ${PORT}`).test(service))
-    errors.push(`${SERVICE_CONFIG}: derivative port ${PORT} not assigned`)
-
-  const database = read(root, DATABASE_PATH)
-  if (!database.includes("opencode-unguarded.db")) errors.push(`${DATABASE_PATH}: derivative database name missing`)
+  if (!/if \(UNGUARDED\) return yield\* Effect\.fail\(new Error\(Updater\.DERIVATIVE_UPDATE_MESSAGE\)\)/.test(upgrade))
+    errors.push(`${UPGRADE}: the upgrade command does not refuse before resolving a method`)
 
   return errors
 }
 
+export function verifyServiceOwnership(root: string) {
+  const errors: string[] = []
+  const version = read(root, VERSION)
+  if (!/export const UNGUARDED = typeof OPENCODE_UNGUARDED === "boolean" && OPENCODE_UNGUARDED/.test(version))
+    errors.push(`${VERSION}: the derivative flag is not compiled in`)
+  if (!version.includes('name: "opencode-unguarded"'))
+    errors.push(`${VERSION}: derivative identity is missing`)
+
+  const registration = read(root, REGISTRATION)
+  if (!/\.\.\.\(UNGUARDED \? \{ derivative: UNGUARDED_IDENTITY\.name \} : \{\}\)/.test(registration))
+    errors.push(`${REGISTRATION}: registrations are not marked as derivative-owned`)
+  if (!/found\.derivative === info\.derivative/.test(registration))
+    errors.push(`${REGISTRATION}: registration ownership is not compared`)
+
+  const service = read(root, SERVICE_CONFIG)
+  if (!service.includes('export const DERIVATIVE_CHANNEL = "unguarded"'))
+    errors.push(`${SERVICE_CONFIG}: derivative channel missing`)
+  if (!new RegExp(`if \\(channel === DERIVATIVE_CHANNEL\\) return ${PORT}`).test(service))
+    errors.push(`${SERVICE_CONFIG}: derivative port ${PORT} not assigned`)
+  if (!/registration\.derivative === UNGUARDED_IDENTITY\.name/.test(service))
+    errors.push(`${SERVICE_CONFIG}: stock registration migration is not rejected`)
+  if (!/!UNGUARDED && name !== "service\.json"/.test(service))
+    errors.push(`${SERVICE_CONFIG}: the stock service.json file is still a migration candidate`)
+
+  const database = read(root, DATABASE_PATH)
+  if (!/if \(UNGUARDED\) return path\.resolve\(data, "opencode-unguarded\.db"\)/.test(database))
+    errors.push(`${DATABASE_PATH}: derivative database is not selected`)
+
+  return errors
+}
+
+export function verifyDerivativeUninstall(root: string) {
+  const errors: string[] = []
+  const uninstall = read(root, UNINSTALL)
+  if (!/if \(UNGUARDED\) return yield\* uninstallDerivative\(input\)/.test(uninstall))
+    errors.push(`${UNINSTALL}: the derivative removal path is not selected`)
+  const start = uninstall.indexOf("const uninstallDerivative")
+  if (start === -1) {
+    errors.push(`${UNINSTALL}: derivative removal implementation is missing`)
+    return errors
+  }
+  const body = uninstall.slice(start)
+  if (!body.includes("OPENCODE_UNGUARDED_ROOT"))
+    errors.push(`${UNINSTALL}: removal does not require a verified installation root`)
+  if (!/found\.derivative === UNGUARDED_IDENTITY\.name/.test(body))
+    errors.push(`${UNINSTALL}: removal does not verify service ownership`)
+  if (!/service-unguarded\.json/.test(body))
+    errors.push(`${UNINSTALL}: removal does not target the derivative registration`)
+  for (const forbidden of ["updater.removal(", "cleanShellConfig", "rm -rf", "src/commands"]) {
+    if (body.includes(forbidden))
+      errors.push(`${UNINSTALL}: derivative removal still uses upstream cleanup (${forbidden})`)
+  }
+  return errors
+}
+
+export function verifyLifecycle(root: string, manifest: Manifest = loadManifest("2.1.2")) {
+  const errors = [...verifyUpdaterBoundary(root), ...verifyServiceOwnership(root), ...verifyDerivativeUninstall(root)]
+  for (const entry of manifest.files) {
+    if (!exists(root, entry.file)) errors.push(`${entry.file}: required file is missing`)
+  }
+  return errors
+}
+
+export function patchLifecycle(_root: string, _manifest?: Manifest): Change[] {
+  throw new Error(
+    "lifecycle patches are applied by script/unguarded/apply.ts; run it with the pinned version instead",
+  )
+}
+
 if (import.meta.main) {
   const args = process.argv.slice(2)
-  const check = args.includes("--check")
-  const root = path.resolve(args.find((arg) => !arg.startsWith("--")) ?? ".")
+  const root = cliRoot(args)
+  const version = args.find((arg, index) => !arg.startsWith("--") && index !== args.indexOf("--root") + 1)
   try {
-    if (!check) {
-      const changes = patchLifecycle(root)
-      for (const change of changes) console.log(`patched ${change.file}: ${change.reason}`)
-      if (changes.length === 0) console.log("no changes needed (already patched)")
+    if (!args.includes("--check")) {
+      console.error("lifecycle patches are applied by script/unguarded/apply.ts; re-run with --check to verify")
+      process.exit(2)
     }
-    const errors = verifyLifecycle(root)
+    const errors = verifyLifecycle(root, version ? loadManifest(version) : undefined)
     if (errors.length > 0) {
       console.error("Lifecycle verification failed:")
       for (const error of errors) console.error(`- ${error}`)
@@ -174,7 +141,7 @@ if (import.meta.main) {
     }
     console.log("lifecycle verification passed")
   } catch (error) {
-    console.error(`lifecycle patch failed: ${(error as Error).message}`)
+    console.error(`lifecycle verification failed: ${(error as Error).message}`)
     process.exit(1)
   }
 }

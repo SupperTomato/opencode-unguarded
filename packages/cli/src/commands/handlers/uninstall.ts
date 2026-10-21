@@ -10,10 +10,15 @@ import { RetainedImage } from "../../services/retained-image"
 import { Updater } from "../../services/updater"
 import { handlePromptErrors, prompt, requireInteractive } from "../../ui/prompt"
 import { errorMessage } from "../../util/error"
+import { UNGUARDED, UNGUARDED_IDENTITY } from "../../version"
 
 export default Runtime.handler(
   Commands.commands.uninstall,
   Effect.fn("cli.uninstall")(function* (input) {
+    // opencode-unguarded: the derivative removes only what it installed. It
+    // never runs an upstream package-manager removal, never edits shell
+    // profiles, and never touches global caches shared with stock OpenCode.
+    if (UNGUARDED) return yield* uninstallDerivative(input)
     intro("Uninstall OpenCode")
     const fs = yield* FileSystem.FileSystem
     const global = yield* Global.Service
@@ -159,3 +164,114 @@ function cleanShellConfig(content: string) {
     .filter((line, index) => !entry(line) && !(line.trim() === "# opencode" && entry(lines[index + 1] ?? "")))
     .join("\n")
 }
+
+// Removal plan for the derivative installation. The launcher sets
+// OPENCODE_UNGUARDED_ROOT to the directory containing bin/ and libexec/;
+// without it this refuses rather than guessing from the executable path.
+const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (input: {
+  readonly dryRun: boolean
+  readonly force: boolean
+}) {
+  const fs = yield* FileSystem.FileSystem
+  const global = yield* Global.Service
+  const installation = process.env.OPENCODE_UNGUARDED_ROOT
+
+  intro(`Uninstall ${UNGUARDED_IDENTITY.name}`)
+  log.message("This removes the candidate program and its background service.")
+  log.message("Sessions, credentials, configuration, and other profile data are kept.")
+
+  if (!installation) {
+    log.warn("OPENCODE_UNGUARDED_ROOT is not set; refusing to guess an installation directory.")
+    log.info("Run the packaged bin/opencode-unguarded launcher, or remove the program directory manually.")
+    return yield* Effect.fail(new Error("refusing to uninstall without a verified installation root"))
+  }
+
+  const root = path.resolve(installation)
+  const binary = path.join(root, "libexec", "opencode")
+  const launcher = path.join(root, "bin", "opencode-unguarded")
+  if (!(yield* fs.exists(launcher)) || !(yield* fs.exists(binary)))
+    return yield* Effect.fail(new Error(`refusing to remove ${root}: it is not an opencode-unguarded installation`))
+
+  const registration = path.join(global.state, "service-unguarded.json")
+  const stop = yield* readOwnedRegistration(fs, registration)
+  const command = yield* findCommandLink(fs, launcher, global.home)
+
+  log.info(`  Installation: ${root}`)
+  log.info(`  Service registration: ${registration}`)
+  if (stop) log.info(`  Background service: pid ${stop.pid}`)
+  if (command) log.info(`  Command link: ${command}`)
+
+  if (input.dryRun) {
+    log.warn("Dry run - no changes made")
+    outro("Done")
+    return
+  }
+  if (!input.force) {
+    yield* requireInteractive("Use --force to uninstall without an interactive terminal, or --dry-run to preview.")
+    const accepted = yield* prompt(() =>
+      confirm({ message: `Remove ${UNGUARDED_IDENTITY.name} from ${root}?`, initialValue: false }),
+    )
+    if (!accepted) {
+      outro("Cancelled")
+      return
+    }
+  }
+
+  const progress = spinner()
+  const errors: string[] = []
+  if (stop) {
+    progress.start("Stopping the derivative service...")
+    yield* ServerConnection.shutdownPersistentPty({ file: registration }).pipe(Effect.ignore)
+    yield* Service.stop({ file: registration }).pipe(
+      Effect.tap(() => Effect.sync(() => progress.stop("Derivative service stopped"))),
+      Effect.catch((error) =>
+        Effect.sync(() => {
+          progress.stop("Failed to stop the derivative service", 1)
+          errors.push(errorMessage(error))
+        }),
+      ),
+    )
+  }
+
+  progress.start("Removing the derivative installation...")
+  yield* fs.remove(root, { recursive: true, force: true }).pipe(
+    Effect.tap(() => Effect.sync(() => progress.stop("Removed the derivative installation"))),
+    Effect.catch((error) =>
+      Effect.sync(() => {
+        progress.stop("Failed to remove the derivative installation", 1)
+        errors.push(errorMessage(error))
+      }),
+    ),
+  )
+  if (command) yield* fs.remove(command).pipe(Effect.catch((error) => Effect.sync(() => errors.push(errorMessage(error)))))
+  if (errors.length) return yield* Effect.fail(new Error(errors.join("\n")))
+  outro("Done")
+})
+
+// Only a registration written by this derivative may be signalled.
+const readOwnedRegistration = (fs: FileSystem.FileSystem, file: string) =>
+  fs.readFileString(file).pipe(
+    Effect.map((text) => JSON.parse(text) as { pid?: number; derivative?: string }),
+    Effect.map((found) =>
+      found.derivative === UNGUARDED_IDENTITY.name && Number.isInteger(found.pid) && (found.pid ?? 0) > 0
+        ? { pid: found.pid! }
+        : undefined,
+    ),
+    Effect.orElseSucceed(() => undefined),
+  )
+
+// Remove only a command link that still points at this installation's launcher.
+const findCommandLink = (fs: FileSystem.FileSystem, launcher: string, home: string) =>
+  Effect.gen(function* () {
+    const directory = path.join(home, ".local", "bin")
+    const names = yield* fs.readDirectory(directory).pipe(Effect.orElseSucceed(() => [] as string[]))
+    for (const name of names) {
+      if (name !== "opencode-unguarded") continue
+      const link = path.join(directory, name)
+      const target = yield* fs.readLink(link).pipe(Effect.orElseSucceed(() => undefined))
+      if (target === undefined) continue
+      const resolved = path.resolve(directory, target)
+      if (resolved === launcher) return link
+    }
+    return undefined
+  })

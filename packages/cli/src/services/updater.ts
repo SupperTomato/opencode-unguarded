@@ -1,7 +1,14 @@
 import { Global } from "@opencode/util/global"
 import { AppProcess } from "@opencode/util/process"
 import { EffectFlock } from "@opencode/util/effect-flock"
-import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_LOCAL, OPENCODE_VERSION } from "../version"
+import {
+  OPENCODE_ARTIFACT,
+  OPENCODE_CHANNEL,
+  OPENCODE_LOCAL,
+  OPENCODE_VERSION,
+  UNGUARDED,
+  UNGUARDED_IDENTITY,
+} from "../version"
 import { Context, Duration, Effect, FileSystem, Layer, Option, Ref, Schema } from "effect"
 import { ChildProcess } from "effect/process"
 import { parse, type ParseError } from "jsonc-parser"
@@ -136,6 +143,29 @@ export function decodePolicy(text: string): Policy | undefined {
   if (input.autoupdate === true) return "auto"
 }
 
+export const DERIVATIVE_UPDATE_MESSAGE = [
+  "opencode-unguarded does not self-update through the upstream installer.",
+  "",
+  "Update this derivative from its own releases:",
+  "  https://github.com/SupperTomato/opencode-unguarded/releases",
+  "",
+  "Download the newer opencode-unguarded-linux-x64.tar.gz, verify checksums.sha256,",
+  "and run install.sh from its release. Your profile at $OPENCODE_UNGUARDED_PROFILE is kept.",
+].join("\n")
+
+// opencode-unguarded: every upstream update route terminates here. `upgrade`,
+// `apply`, `run`, `check`, `latest`, and `removal` share this refusal so an
+// explicit --method, the startup check, or the TUI cannot reach the installer.
+export const derivativeUpdateError = () =>
+  new UpgradeError(
+    {
+      title: "This build does not self-update",
+      detail: DERIVATIVE_UPDATE_MESSAGE,
+      retry: "Install the newer release archive from the URL above.",
+    },
+    { cause: new Error("upstream updater disabled in opencode-unguarded") },
+  )
+
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const global = yield* Global.Service
@@ -258,6 +288,7 @@ const make = Effect.gen(function* () {
   }
 
   const removal = (method: Method) => {
+    if (UNGUARDED) return undefined
     const command = removalCommand(method)
     if (!command) return undefined
     return {
@@ -358,12 +389,14 @@ const make = Effect.gen(function* () {
     return version
   })
 
-  const latest = (selected?: Method) =>
-    (selected ? Effect.succeed(selected) : method()).pipe(
-      Effect.flatMap((method) =>
-        method === "winget" ? wingetVersion() : release(method).pipe(Effect.map((data) => data.version)),
-      ),
-    )
+  const latest = Effect.fnUntraced(function* (selected?: Method) {
+    if (UNGUARDED) return yield* Effect.fail(derivativeUpdateError())
+    const detected = selected ?? (yield* method())
+    if (!detected) return yield* Effect.fail(derivativeUpdateError())
+    if (detected === "winget") return yield* wingetVersion()
+    const data = yield* release(detected)
+    return data.version
+  })
 
   const temporaryDirectory = (prefix: string) =>
     Effect.acquireRelease(fs.makeTempDirectory({ directory: global.cache, prefix }), (directory) =>
@@ -423,6 +456,7 @@ const make = Effect.gen(function* () {
   }
 
   const upgrade = Effect.fnUntraced(function* (method: Method, input: string) {
+    if (UNGUARDED) return yield* Effect.fail(derivativeUpdateError())
     if (!parseReleaseVersion(input)) return yield* Effect.fail(new Error(`Invalid version: ${input}`))
     const version = input.trim().replace(/^v/, "")
     const packageName =
@@ -531,6 +565,10 @@ const make = Effect.gen(function* () {
   })
 
   const inspect = Effect.fnUntraced(function* () {
+    if (UNGUARDED) {
+      yield* Effect.logInfo("update check skipped", { reason: "derivative", version: OPENCODE_VERSION })
+      return undefined
+    }
     if (OPENCODE_LOCAL || ["1", "true"].includes(process.env.OPENCODE_DISABLE_AUTOUPDATE?.toLowerCase() ?? "")) {
       yield* Effect.logInfo("update check skipped", {
         reason: OPENCODE_LOCAL ? "local-install" : "disabled",
@@ -561,6 +599,7 @@ const make = Effect.gen(function* () {
   })
 
   const install = Effect.fnUntraced(function* (version: string) {
+    if (UNGUARDED) return yield* Effect.fail(derivativeUpdateError())
     const detected = yield* method()
     if (!detected) {
       yield* Effect.logWarning("update skipped: installation method not found")
@@ -583,6 +622,11 @@ const make = Effect.gen(function* () {
   })
 
   const check = Effect.fn("cli.updater.check")(function* () {
+    if (UNGUARDED)
+      return {
+        type: "unavailable" as const,
+        message: `This is ${UNGUARDED_IDENTITY.name} revision ${UNGUARDED_IDENTITY.revision}. It updates only from its own releases.`,
+      }
     if (OPENCODE_LOCAL)
       return {
         type: "unavailable" as const,
@@ -609,6 +653,7 @@ const make = Effect.gen(function* () {
 
   const run = Effect.fn("cli.updater.run")(
     function* (onInstall: (version: string) => void = () => {}) {
+      if (UNGUARDED) return undefined
       const result = yield* inspect()
       if (!result) return undefined
       if (result.policy === "notify") return { type: "available" as const, version: result.version }

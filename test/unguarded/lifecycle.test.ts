@@ -2,19 +2,21 @@ import { describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { patchLifecycle, verifyLifecycle } from "../../script/unguarded/lifecycle"
+import {
+  verifyDerivativeUninstall,
+  verifyLifecycle,
+  verifyServiceOwnership,
+  verifyUpdaterBoundary,
+} from "../../script/unguarded/lifecycle"
+import { loadManifest, read } from "../../script/unguarded/apply"
 
 const repoRoot = process.env.UNGUARDED_SOURCE_ROOT ?? path.join(import.meta.dir, "..", "..")
+const manifest = loadManifest("2.1.2")
 
-const files = [
-  "packages/cli/package.json",
-  "packages/cli/src/commands/handlers/upgrade.ts",
-  "packages/cli/src/services/service-config.ts",
-  "packages/cli/src/database-path.ts",
-]
+const files = new Set([...manifest.files.map((entry) => entry.file), ...manifest.protected.map((entry) => entry.file)])
 
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "unguarded-lifecycle-"))
+  const root = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "unguarded-lifecycle-"))
   for (const file of files) {
     const target = path.join(root, file)
     fs.mkdirSync(path.dirname(target), { recursive: true })
@@ -23,45 +25,89 @@ function fixture() {
   return root
 }
 
-describe("derivative lifecycle", () => {
-  test("checked-in source verifies clean", () => {
-    expect(verifyLifecycle(repoRoot)).toEqual([])
+function rewrite(root: string, file: string, transform: (content: string) => string) {
+  const target = path.join(root, file)
+  fs.writeFileSync(target, transform(fs.readFileSync(target, "utf8")))
+}
+
+describe("lifecycle verification", () => {
+  test("the checked-in source satisfies every invariant", () => {
+    expect(verifyLifecycle(repoRoot, manifest)).toEqual([])
   })
 
-  test("second application is a no-op", () => {
-    expect(patchLifecycle(fixture())).toEqual([])
-  })
-
-  test("verifier detects a removed upgrade guard", () => {
+  test("every updater entry point is gated", () => {
     const root = fixture()
-    const target = path.join(root, "packages/cli/src/commands/handlers/upgrade.ts")
-    fs.writeFileSync(target, fs.readFileSync(target, "utf8").replace("does not self-update through the upstream installer", ""))
-    expect(verifyLifecycle(root).join("\n")).toMatch(/derivative upgrade message missing/)
+    expect(verifyUpdaterBoundary(root)).toEqual([])
+    rewrite(root, "packages/cli/src/services/updater.ts", (content) =>
+      content.replace(
+        /const upgrade = Effect\.fnUntraced\(function\* \(method: Method, input: string\) \{\s*if \(UNGUARDED\)[^\n]*\n/,
+        "const upgrade = Effect.fnUntraced(function* (method: Method, input: string) {\n",
+      ),
+    )
+    expect(verifyUpdaterBoundary(root).join("\n")).toMatch(/upgrade\(\) does not enforce/)
   })
 
-  test("verifier detects a removed derivative channel", () => {
+  test("a guard that exists only as a comment is rejected", () => {
     const root = fixture()
-    const target = path.join(root, "packages/cli/src/services/service-config.ts")
-    fs.writeFileSync(target, fs.readFileSync(target, "utf8").replace('export const DERIVATIVE_CHANNEL = "unguarded"', ""))
-    expect(verifyLifecycle(root).join("\n")).toMatch(/derivative channel missing/)
+    rewrite(root, "packages/cli/src/services/updater.ts", (content) =>
+      content.replace("if (UNGUARDED) return yield* Effect.fail(derivativeUpdateError())", "// if (UNGUARDED) disabled"),
+    )
+    expect(verifyUpdaterBoundary(root)).not.toEqual([])
   })
 
-  test("verifier detects a removed derivative port", () => {
+  test("removing the command-level refusal is detected", () => {
     const root = fixture()
-    const target = path.join(root, "packages/cli/src/services/service-config.ts")
-    fs.writeFileSync(target, fs.readFileSync(target, "utf8").replace("if (channel === DERIVATIVE_CHANNEL) return 47499", ""))
-    expect(verifyLifecycle(root).join("\n")).toMatch(/derivative port 47499 not assigned/)
+    rewrite(root, "packages/cli/src/commands/handlers/upgrade.ts", (content) =>
+      content.replace("if (UNGUARDED) return yield* Effect.fail(new Error(Updater.DERIVATIVE_UPDATE_MESSAGE))", ""),
+    )
+    expect(verifyUpdaterBoundary(root).join("\n")).toMatch(/does not refuse before resolving a method/)
   })
 
-  test("verifier detects a restored stock database name", () => {
+  test("removing the registration ownership marker is detected", () => {
     const root = fixture()
-    const target = path.join(root, "packages/cli/src/database-path.ts")
-    fs.writeFileSync(target, fs.readFileSync(target, "utf8").replace("opencode-unguarded.db", "opencode.db"))
-    expect(verifyLifecycle(root).join("\n")).toMatch(/derivative database name missing/)
+    rewrite(root, "packages/cli/src/services/service-registration.ts", (content) =>
+      content.replace(
+        "...(UNGUARDED ? { derivative: UNGUARDED_IDENTITY.name } : {}),",
+        "",
+      ),
+    )
+    expect(verifyServiceOwnership(root).join("\n")).toMatch(/not marked as derivative-owned/)
   })
 
-  test("derivative port differs from the stock latest port", () => {
-    const service = fs.readFileSync(path.join(repoRoot, "packages/cli/src/services/service-config.ts"), "utf8")
+  test("restoring stock service.json migration is detected", () => {
+    const root = fixture()
+    rewrite(root, "packages/cli/src/services/service-config.ts", (content) =>
+      content.replace('!UNGUARDED && name !== "service.json"', 'name !== "service.json"'),
+    )
+    expect(verifyServiceOwnership(root).join("\n")).toMatch(/stock service\.json file is still a migration candidate/)
+  })
+
+  test("restoring the stock database filename is detected", () => {
+    const root = fixture()
+    rewrite(root, "packages/cli/src/database-path.ts", (content) =>
+      content.replace('if (UNGUARDED) return path.resolve(data, "opencode-unguarded.db")', ""),
+    )
+    expect(verifyServiceOwnership(root).join("\n")).toMatch(/derivative database is not selected/)
+  })
+
+  test("removing the derivative removal branch is detected", () => {
+    const root = fixture()
+    rewrite(root, "packages/cli/src/commands/handlers/uninstall.ts", (content) =>
+      content.replace("if (UNGUARDED) return yield* uninstallDerivative(input)", ""),
+    )
+    expect(verifyDerivativeUninstall(root).join("\n")).toMatch(/removal path is not selected/)
+  })
+
+  test("a salt-in-the-prompt removal route is detected", () => {
+    const root = fixture()
+    rewrite(root, "packages/cli/src/commands/handlers/uninstall.ts", (content) =>
+      `${content}\n// updater.removal(method)\n`,
+    )
+    expect(verifyDerivativeUninstall(root).join("\n")).toMatch(/upstream cleanup/)
+  })
+
+  test("the derivative port differs from every stock port", () => {
+    const service = read(repoRoot, "packages/cli/src/services/service-config.ts")
     const derivative = /if \(channel === DERIVATIVE_CHANNEL\) return (\d+)/.exec(service)
     const stock = /channel === "next"\) return (0x[0-9a-f]+)/.exec(service)
     expect(derivative).not.toBeNull()

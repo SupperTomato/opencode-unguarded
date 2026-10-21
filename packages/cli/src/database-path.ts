@@ -1,9 +1,9 @@
 import path from "node:path"
-import { OPENCODE_CHANNEL } from "./version"
+import { OPENCODE_CHANNEL, UNGUARDED } from "./version"
 
 export function databasePath(data: string) {
-  // opencode-unguarded: derivative lifecycle: keep the derivative database separate from stock installs.
-  if (!process.env.OPENCODE_DB) return path.resolve(data, "opencode-unguarded.db")
+  // opencode-unguarded: keep the derivative database separate from stock installs.
+  if (UNGUARDED) return path.resolve(data, "opencode-unguarded.db")
   const filename =
     process.env.OPENCODE_DB ??
     (["latest", "dev", "beta", "next", "prod"].includes(OPENCODE_CHANNEL) ||

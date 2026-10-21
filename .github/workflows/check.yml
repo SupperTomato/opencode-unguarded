@@ -11,6 +11,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -27,39 +28,80 @@ jobs:
       - name: Validate manifests
         run: |
           for file in manifests/*.json; do
+            jq -e '.schema == 2' "$file" > /dev/null
             jq -e '.upstream.commit | test("^[0-9a-f]{40}$")' "$file" > /dev/null
             jq -e '.upstream.version' "$file" > /dev/null
-            jq -e '.removals | length > 0' "$file" > /dev/null
+            jq -e '.files | length > 0' "$file" > /dev/null
+            jq -e '.protected | length > 0' "$file" > /dev/null
+            jq -e '[.files[] | .pristine, .final] | all(test("^[0-9a-f]{64}$"))' "$file" > /dev/null
           done
 
       - name: Install derivative tooling dependencies
         run: bun install
 
-      - name: Run derivative tests
-        run: bun test ./test/unguarded/
-
-      - name: Verify checked-in source is fully patched
-        run: |
-          VERSION=$(jq -r .upstream.version manifests/*.json | head -1)
-          bun script/unguarded/apply.ts "$VERSION" --root . --check
-          bun script/unguarded/telemetry.ts . --check
-          bun script/unguarded/lifecycle.ts . --check
-
-      - name: Verify each manifest against its pinned upstream source
+      - name: Verify the checked-in derivative tree
         run: |
           for file in manifests/*.json; do
             VERSION=$(jq -r .upstream.version "$file")
+            bun script/unguarded/apply.ts "$VERSION" --root . --check
+            bun script/unguarded/lifecycle.ts --root . --check
+            bun script/unguarded/telemetry.ts . --check
+          done
+
+      - name: Run derivative tests
+        env:
+          UNGUARDED_UPSTREAM: ${{ github.workspace }}/.check/upstream
+        run: |
+          mkdir -p .check
+          VERSION=$(jq -r .upstream.version "$(ls manifests/*.json | head -1)")
+          COMMIT=$(jq -r .upstream.commit "$(ls manifests/*.json | head -1)")
+          REPOSITORY=$(jq -r .upstream.repository "$(ls manifests/*.json | head -1)")
+          DIR=.check/upstream
+          rm -rf "$DIR"
+          git init -q "$DIR"
+          git -C "$DIR" remote add origin "$REPOSITORY"
+          git -C "$DIR" fetch -q --depth=1 origin "$COMMIT"
+          git -C "$DIR" checkout -q FETCH_HEAD
+          bun test ./test/unguarded/
+
+      - name: Verify each manifest against its pinned upstream source
+        env:
+          UNGUARDED_UPSTREAM: ${{ github.workspace }}/.check/upstream
+        run: |
+          mkdir -p .check
+          for file in manifests/*.json; do
+            VERSION=$(jq -r .upstream.version "$file")
             COMMIT=$(jq -r .upstream.commit "$file")
-            DIR=$(mktemp -d)
-            git -C "$DIR" init -q
-            git -C "$DIR" remote add origin https://github.com/anomalyco/opencode.git
+            DIR=.check/upstream
+            rm -rf "$DIR"
+            git init -q "$DIR"
+            git -C "$DIR" remote add origin "$(jq -r .upstream.repository "$file")"
             git -C "$DIR" fetch -q --depth=1 origin "$COMMIT"
             git -C "$DIR" checkout -q FETCH_HEAD
-            # A pinned checkout is pristine: apply, then verify the resulting state.
-            bun script/unguarded/apply.ts "$VERSION" --root "$DIR" || exit 1
-            bun script/unguarded/apply.ts "$VERSION" --root "$DIR" --check || exit 1
-            rm -rf "$DIR"
+            UNGUARDED_UPSTREAM="$DIR" bun test ./test/unguarded/apply.test.ts
+            bun script/unguarded/apply.ts "$VERSION" --root "$DIR"
+            bun script/unguarded/apply.ts "$VERSION" --root "$DIR" --check
+            bun script/unguarded/lifecycle.ts --root "$DIR" --check
+            bun script/unguarded/telemetry.ts "$DIR" --check
+            git -C "$DIR" add -A -N
+            CHANGED=$(git -C "$DIR" diff --name-only | sort)
+            ALLOWED=$(jq -r '.files[].file' "$file" | sort)
+            if [ "$CHANGED" != "$ALLOWED" ]; then
+              echo "Patched files do not match the manifest for $VERSION" >&2
+              diff <(printf '%s\n' "$ALLOWED") <(printf '%s\n' "$CHANGED") >&2 || true
+              exit 1
+            fi
+            for protected in $(jq -r '.protected[].file' "$file"); do
+              test -z "$(git -C "$DIR" diff --name-only -- "$protected")" || {
+                echo "Protected file changed: $protected" >&2
+                exit 1
+              }
+            done
           done
+
+      - name: Verify packaging scripts parse
+        run: |
+          for file in packaging/linux-x64/*.sh packaging/linux-x64/launcher; do bash -n "$file"; done
 
       - name: Verify workflows parse
         run: |

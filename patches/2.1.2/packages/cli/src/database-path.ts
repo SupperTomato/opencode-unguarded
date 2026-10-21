@@ -1,0 +1,15 @@
+import path from "node:path"
+import { OPENCODE_CHANNEL, UNGUARDED } from "./version"
+
+export function databasePath(data: string) {
+  // opencode-unguarded: keep the derivative database separate from stock installs.
+  if (UNGUARDED) return path.resolve(data, "opencode-unguarded.db")
+  const filename =
+    process.env.OPENCODE_DB ??
+    (["latest", "dev", "beta", "next", "prod"].includes(OPENCODE_CHANNEL) ||
+    process.env.OPENCODE_DISABLE_CHANNEL_DB === "1" ||
+    process.env.OPENCODE_DISABLE_CHANNEL_DB === "true"
+      ? "opencode.db"
+      : `opencode-${OPENCODE_CHANNEL.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
+  return filename === ":memory:" ? filename : path.resolve(data, filename)
+}

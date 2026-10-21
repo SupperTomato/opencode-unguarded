@@ -37,22 +37,64 @@ jobs:
           echo "::notice::Upstream ${{ steps.upstream.outputs.version }} has no reviewed manifest; not building."
           echo "Add manifests/${{ steps.upstream.outputs.version }}.json after auditing the new source."
 
-      - name: Check for existing release
+      - name: Read the derivative revision for this source
+        if: steps.upstream.outputs.supported == 'true'
+        id: revision
+        env:
+          VERSION: ${{ steps.upstream.outputs.version }}
+        run: |
+          set -euo pipefail
+          REVISION=$(jq -r '.derivativeRevision // empty' "manifests/${VERSION}.json")
+          if ! printf '%s' "$REVISION" | grep -Eq '^[1-9][0-9]*$'; then
+            REVISION=1
+          fi
+          echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
+
+      - name: Check for an existing release
         if: steps.upstream.outputs.supported == 'true'
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+          REVISION: ${{ steps.revision.outputs.revision }}
         run: |
-          TAG="v${{ steps.upstream.outputs.version }}-unguarded.2"
-          if gh release view "$TAG" > /dev/null 2>&1; then
+          set -euo pipefail
+          if gh release view "v${VERSION}-unguarded.${REVISION}" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Trigger build
+      - name: Check for an existing successful candidate build
         if: steps.upstream.outputs.supported == 'true' && steps.release.outputs.exists == 'false'
+        id: build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.upstream.outputs.version }}
-        run: gh workflow run build-release.yml --ref "$GITHUB_REF_NAME" -f upstream_version="$VERSION" -f derivative_revision=2 -f publish=false
+          REVISION: ${{ steps.revision.outputs.revision }}
+        run: |
+          set -euo pipefail
+          # A failed build must be retryable; a successful candidate build for
+          # this exact upstream version and revision must not run every day.
+          NAME="build ${VERSION}-unguarded.${REVISION}"
+          RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build-release.yml --limit 100 \
+            --json status,conclusion,displayTitle \
+            | jq --arg name "$NAME" '[.[] | select(.displayTitle == $name and .conclusion == "success")] | length')
+          echo "successful=$RUNS" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger build
+        if: |
+          steps.upstream.outputs.supported == 'true' &&
+          steps.release.outputs.exists == 'false' &&
+          steps.build.outputs.successful == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+          REVISION: ${{ steps.revision.outputs.revision }}
+        run: |
+          gh workflow run build-release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF_NAME" \
+            -f upstream_version="$VERSION" \
+            -f derivative_revision="$REVISION" \
+            -f publish=false

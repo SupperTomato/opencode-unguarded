@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { Effect } from "effect"
 import { Otlp } from "../src/observability/otlp.js"
 
-// opencode-unguarded: telemetry disabled at build time: this derivative must not create OTLP exporters.
+// opencode-unguarded: this derivative must never create OTLP exporters.
 test("tracingLayer never exports spans even when an endpoint is configured", async () => {
   const requests: unknown[] = []
   const server = Bun.serve({

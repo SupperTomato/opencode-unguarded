@@ -1,6 +1,6 @@
-// opencode-unguarded: telemetry disabled at build time
 import pkg from "../../../package.json"
 
+// opencode-unguarded: desktop error reporting is removed at build time.
 export function desktopVersion() {
   return import.meta.env.OPENCODE_VERSION ?? pkg.version
 }

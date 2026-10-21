@@ -5,7 +5,7 @@ import path from "node:path"
 import { Effect, FileSystem, Schedule, Schema } from "effect"
 import { HttpServer } from "effect/http"
 import { NetAddress } from "effect/net"
-import { OPENCODE_VERSION } from "../version"
+import { OPENCODE_VERSION, UNGUARDED, UNGUARDED_IDENTITY } from "../version"
 
 const infoJson = Schema.fromJsonString(Service.Info)
 const encodeInfo = Schema.encodeEffect(infoJson)
@@ -24,6 +24,9 @@ export const register = Effect.fnUntraced(function* (options: {
   const info = {
     id: options.id,
     version: OPENCODE_VERSION,
+    // opencode-unguarded: ownership marker. Stock OpenCode omits this field, so
+    // an equal version number can never make a stock registration look ours.
+    ...(UNGUARDED ? { derivative: UNGUARDED_IDENTITY.name } : {}),
     url: HttpServer.formatAddress(options.address),
     pid: process.pid,
     password: options.password,
@@ -33,6 +36,7 @@ export const register = Effect.fnUntraced(function* (options: {
   const owns = (found: Info) =>
     found.id === info.id &&
     found.version === info.version &&
+    found.derivative === info.derivative &&
     found.url === info.url &&
     found.pid === info.pid &&
     found.password === info.password

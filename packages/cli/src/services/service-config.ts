@@ -1,5 +1,5 @@
 import { Global } from "@opencode/util/global"
-import { OPENCODE_CHANNEL, OPENCODE_VERSION } from "../version"
+import { OPENCODE_CHANNEL, OPENCODE_VERSION, UNGUARDED, UNGUARDED_IDENTITY } from "../version"
 import { Hash } from "@opencode/util/hash"
 import { Service } from "@opencode/client/effect/service"
 import { Effect, FileSystem, Option, Schema } from "effect"
@@ -38,7 +38,7 @@ const decodeLegacy = Schema.decodeUnknownOption(
 )
 const decodeRegistration = Schema.decodeUnknownEffect(Schema.fromJsonString(Service.Info))
 
-// opencode-unguarded: derivative lifecycle: a distinct channel keeps registrations, ports, and databases apart.
+// opencode-unguarded: a distinct channel keeps registrations, ports, and databases apart.
 export const DERIVATIVE_CHANNEL = "unguarded"
 
 export function filename(channel = OPENCODE_CHANNEL) {
@@ -79,6 +79,17 @@ export function versionBelongsToChannel(
   return /^\d+(?:\.\d+)?$/.test(version.slice(prefix.length))
 }
 
+// opencode-unguarded: a registration only belongs to this installation when it
+// was written by this derivative. Version equality alone is not ownership: a
+// stock 2.1.2 registration has the same version string.
+export function registrationBelongsToChannel(
+  registration: { readonly derivative?: string },
+  channel = OPENCODE_CHANNEL,
+) {
+  if (channel !== DERIVATIVE_CHANNEL) return true
+  return registration.derivative === UNGUARDED_IDENTITY.name
+}
+
 export const migrateRegistration = Effect.fnUntraced(function* (
   legacy: string,
   file: string,
@@ -90,6 +101,7 @@ export const migrateRegistration = Effect.fnUntraced(function* (
   if (Option.isNone(text)) return
   const registration = yield* decodeRegistration(text.value).pipe(Effect.option)
   if (Option.isNone(registration)) return
+  if (!registrationBelongsToChannel(registration.value, channel)) return
   if (!versionBelongsToChannel(registration.value.version, channel, installedVersion)) return
   yield* fs.writeFileString(file, text.value, { flag: "wx", mode: 0o600 }).pipe(Effect.ignore)
 })
@@ -128,7 +140,10 @@ const paths = Effect.gen(function* () {
     legacyConfigFile: legacy ? path.join(global.config, legacy) : undefined,
     legacyRegistrationFiles: [
       ...(legacy ? [path.join(global.state, legacy)] : []),
-      ...(name !== "service.json" && OPENCODE_CHANNEL !== "local" ? [path.join(global.state, "service.json")] : []),
+      // opencode-unguarded: never adopt the stock registration file.
+      ...(!UNGUARDED && name !== "service.json" && OPENCODE_CHANNEL !== "local"
+        ? [path.join(global.state, "service.json")]
+        : []),
     ],
     configFile: path.join(global.config, name),
   }

@@ -1,12 +1,10 @@
-// opencode-unguarded: telemetry disabled at build time
-const sentryVitePlugin = (..._args: unknown[]) => false
 import { fileURLToPath } from "node:url"
 import { defineConfig } from "vite"
 import desktopPlugin, { channel } from "./vite.js"
 import { icons } from "./vite.icons"
 import { serviceWorker } from "./vite.pwa"
 
-// opencode-unguarded: telemetry disabled at build time
+// opencode-unguarded: Sentry build plugin and sourcemap upload are removed.
 const sentry = false
 
 export default defineConfig({

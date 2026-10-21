@@ -2,23 +2,21 @@ import { describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { stripTelemetry, verifyTelemetryDisabled } from "../../script/unguarded/telemetry"
+import {
+  verifyTelemetryBinary,
+  verifyTelemetryDisabled,
+  verifyTelemetrySource,
+} from "../../script/unguarded/telemetry"
+import { loadManifest } from "../../script/unguarded/apply"
 
 const repoRoot = process.env.UNGUARDED_SOURCE_ROOT ?? path.join(import.meta.dir, "..", "..")
-
-const files = [
-  "packages/cli/package.json",
-  "packages/util/src/observability/otlp.ts",
-  "packages/util/src/observability.ts",
-  "packages/app/src/entry.tsx",
-  "packages/app/vite.config.ts",
-  "packages/desktop/electron.vite.config.ts",
-  "packages/desktop/src/renderer/startup/sentry.ts",
-  "packages/util/test/observability-otlp.test.ts",
-]
+const manifest = loadManifest("2.1.2")
+const files = manifest.files
+  .map((entry) => entry.file)
+  .filter((file) => /^packages\/(util|app|desktop)\//.test(file))
 
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "unguarded-telemetry-"))
+  const root = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "unguarded-telemetry-"))
   for (const file of files) {
     const target = path.join(root, file)
     fs.mkdirSync(path.dirname(target), { recursive: true })
@@ -32,109 +30,104 @@ function rewrite(root: string, file: string, transform: (content: string) => str
   fs.writeFileSync(target, transform(fs.readFileSync(target, "utf8")))
 }
 
-describe("telemetry verification", () => {
-  test("checked-in source verifies clean", () => {
-    expect(verifyTelemetryDisabled(repoRoot)).toEqual([])
+describe("telemetry source invariants", () => {
+  test("the checked-in source verifies clean", () => {
+    expect(verifyTelemetryDisabled(repoRoot, manifest)).toEqual([])
   })
 
-  test("rejects a nonexistent root", () => {
-    expect(verifyTelemetryDisabled("/tmp/definitely-not-a-checkout-xyz")).toEqual([
-      "/tmp/definitely-not-a-checkout-xyz: checkout does not exist",
-    ])
-  })
-
-  test("rejects a directory that is not an OpenCode checkout", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "unguarded-empty-"))
-    expect(verifyTelemetryDisabled(root)[0]).toMatch(/not an OpenCode checkout/)
-  })
-
-  test("rejects a missing required file", () => {
-    const root = fixture()
-    fs.rmSync(path.join(root, "packages/util/src/observability/otlp.ts"))
-    expect(verifyTelemetryDisabled(root).join("\n")).toMatch(/required file is missing/)
-  })
-
-  test("detects a restored OTLP exporter beneath a retained marker", () => {
+  test("an active exporter beneath retained comments is rejected", () => {
     const root = fixture()
     rewrite(root, "packages/util/src/observability/otlp.ts", (content) =>
       `${content}\nconst exporter = new OTLPTraceExporter({ url: "/v1/traces" })\n`,
     )
-    const errors = verifyTelemetryDisabled(root).join("\n")
+    const errors = verifyTelemetrySource(root).join("\n")
     expect(errors).toMatch(/OTLPTraceExporter remains/)
     expect(errors).toMatch(/\/v1\/traces remains/)
   })
 
-  test("detects a restored exporter layer in observability.ts", () => {
+  test("a decoy no-op comment does not satisfy the logger check", () => {
+    const root = fixture()
+    rewrite(root, "packages/util/src/observability/otlp.ts", (content) =>
+      content.replace(
+        /export function loggers\([^)]*\) \{\s*return \[\]\s*\}/,
+        '// export function loggers(a, b) { return [] }\nexport function loggers(_options, _app) { return makeLoggers() }',
+      ),
+    )
+    expect(verifyTelemetrySource(root).join("\n")).toMatch(/loggers\(\) is not a no-op/)
+  })
+
+  test("restored OTLP layering in observability is rejected", () => {
     const root = fixture()
     rewrite(root, "packages/util/src/observability.ts", (content) =>
       content.replace("return local", "return Layer.merge(local, Otlp.tracingLayer(options, app))"),
     )
-    expect(verifyTelemetryDisabled(root).join("\n")).toMatch(/Otlp\. remains/)
+    expect(verifyTelemetrySource(root).join("\n")).toMatch(/Otlp\. remains/)
   })
 
-  test("detects a lost local logging layer", () => {
+  test("a lost local logging layer is rejected", () => {
     const root = fixture()
     rewrite(root, "packages/util/src/observability.ts", (content) =>
       content.replace("Logging.loggers(", "someOtherLogger("),
     )
-    expect(verifyTelemetryDisabled(root).join("\n")).toMatch(/local logging is not preserved/)
+    expect(verifyTelemetrySource(root).join("\n")).toMatch(/local logging is not preserved/)
   })
 
-  test("detects restored browser Sentry initialization", () => {
+  test("a dynamic browser Sentry import is rejected", () => {
     const root = fixture()
-    rewrite(root, "packages/app/src/entry.tsx", (content) => `import { init } from "@sentry/solid"\n${content}`)
-    expect(verifyTelemetryDisabled(root).join("\n")).toMatch(/Sentry import remains/)
-  })
-
-  test("detects a restored dynamic Sentry plugin import", () => {
-    const root = fixture()
-    rewrite(root, "packages/desktop/electron.vite.config.ts", (content) =>
-      content.replace(
-        "const sentry = false",
-        'const sentry =\n  process.env.A && process.env.B && process.env.C\n    ? (await import("@sentry/vite-plugin")).sentryVitePlugin({})\n    : false',
-      ),
+    rewrite(root, "packages/app/src/entry.tsx", (content) =>
+      `${content}\nimport("@sentry/solid").then(({ init }) => init({ dsn: "x" }))\n`,
     )
-    const errors = verifyTelemetryDisabled(root).join("\n")
-    expect(errors).toMatch(/dynamic Sentry import remains/)
-    expect(errors).toMatch(/Sentry build plugin is still constructed/)
+    expect(verifyTelemetrySource(root).join("\n")).toMatch(/Sentry initialization remains/)
   })
 
-  test("detects a restored static Sentry plugin import", () => {
+  test("an active Sentry plugin with a decoy stub is rejected", () => {
     const root = fixture()
     rewrite(root, "packages/app/vite.config.ts", (content) =>
-      content.replace(
-        "const sentryVitePlugin = (..._args: unknown[]) => false",
-        'import { sentryVitePlugin } from "@sentry/vite-plugin"',
-      ),
+      `${content}\n// const sentryVitePlugin = (..._args) => false\nvoid sentryVitePlugin({})\n`,
     )
-    expect(verifyTelemetryDisabled(root).join("\n")).toMatch(/Sentry import remains/)
+    expect(verifyTelemetrySource(root).join("\n")).toMatch(/still constructed/)
   })
 
-  test("detects a desktop shim that dropped desktopVersion", () => {
+  test("desktop reporting with a retained marker is rejected", () => {
+    const root = fixture()
+    rewrite(root, "packages/desktop/src/renderer/startup/sentry.ts", (content) =>
+      content.replace("return undefined", 'await fetch("https://sentry.example")'),
+    )
+    expect(verifyTelemetrySource(root).join("\n")).toMatch(/initializeSentry is not a no-op/)
+  })
+
+  test("dropping desktopVersion is rejected", () => {
     const root = fixture()
     rewrite(root, "packages/desktop/src/renderer/startup/sentry.ts", () => "export const nothing = 1\n")
-    expect(verifyTelemetryDisabled(root).join("\n")).toMatch(/desktopVersion export was dropped/)
+    expect(verifyTelemetrySource(root).join("\n")).toMatch(/desktopVersion export was dropped/)
+  })
+
+  test("a missing required file is reported", () => {
+    const root = fixture()
+    fs.rmSync(path.join(root, "packages/util/src/observability/otlp.ts"))
+    expect(verifyTelemetrySource(root).join("\n")).toMatch(/required file is missing/)
   })
 })
 
-describe("telemetry patch determinism", () => {
-  test("second application is a no-op on the checked-in tree", () => {
-    const root = fixture()
-    expect(stripTelemetry(root)).toEqual([])
+describe("telemetry binary verification", () => {
+  test("rejects a binary containing exporter strings", () => {
+    const directory = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "unguarded-binary-"))
+    const binary = path.join(directory, "opencode")
+    fs.writeFileSync(binary, "hello OTLPTraceExporter VITE_SENTRY_DSN @sentry/solid")
+    const errors = verifyTelemetryBinary(binary).join("\n")
+    expect(errors).toMatch(/OTLPTraceExporter/)
+    expect(errors).toMatch(/VITE_SENTRY_DSN/)
+    expect(errors).toMatch(/@sentry\/solid/)
   })
 
-  test("one pass from pristine produces the checked-in output", () => {
-    const root = fixture()
-    // Restore pristine upstream text for every target by copying from the pinned worktree.
-    const pristine = process.env.UNGUARDED_PRISTINE
-    if (!pristine) return
-    for (const file of files) {
-      fs.copyFileSync(path.join(pristine, file), path.join(root, file))
-    }
-    stripTelemetry(root)
-    for (const file of files) {
-      expect(fs.readFileSync(path.join(root, file), "utf8")).toBe(fs.readFileSync(path.join(repoRoot, file), "utf8"))
-    }
-    expect(stripTelemetry(root)).toEqual([])
+  test("accepts a binary with none of the banned tokens", () => {
+    const directory = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "unguarded-binary-"))
+    const binary = path.join(directory, "opencode")
+    fs.writeFileSync(binary, "opencode-unguarded no restrictions")
+    expect(verifyTelemetryBinary(binary)).toEqual([])
+  })
+
+  test("reports a missing binary", () => {
+    expect(verifyTelemetryBinary("/tmp/definitely-not-a-binary-xyz").join("\n")).toMatch(/does not exist/)
   })
 })

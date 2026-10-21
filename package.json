@@ -33,7 +33,10 @@
     "prepare": "husky",
     "random": "echo 'Random script'",
     "sso": "aws sso login --sso-session=opencode --no-browser",
-    "test": "echo 'do not run tests from root' && exit 1"
+    "test": "echo 'do not run tests from root' && exit 1",
+    "unguarded:prepare": "bun script/unguarded/apply.ts",
+    "unguarded:verify": "bun script/unguarded/apply.ts --check",
+    "unguarded:validate": "bun script/unguarded/validate.ts"
   },
   "workspaces": {
     "packages": [

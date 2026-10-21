@@ -30,7 +30,8 @@ export function layer(
     Layer.orDie,
     Layer.merge(Layer.succeed(References.MinimumLogLevel, Logging.minimumLogLevel())),
   )
-  // opencode-unguarded: telemetry disabled at build time: only local logging is installed.
+  // opencode-unguarded: telemetry disabled at build time. Only local logging is
+  // installed; no OTLP logger, exporter, or tracing layer is constructed.
   return local
 }
 
