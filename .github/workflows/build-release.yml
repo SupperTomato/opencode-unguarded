@@ -206,8 +206,22 @@ jobs:
             checksums.sha256
           retention-days: 30
 
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout derivative
+        uses: actions/checkout@v4
+
+      - name: Download verified artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: opencode-unguarded-linux-x64
+
       - name: Publish release
-        if: inputs.publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.upstream_version }}
