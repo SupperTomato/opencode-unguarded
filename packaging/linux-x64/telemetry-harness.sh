@@ -8,8 +8,12 @@
 # none. This distinguishes "telemetry disabled" from "harness never worked".
 set -euo pipefail
 
-candidate="${1:?usage: telemetry-harness.sh <candidate-binary> <stock-binary>}"
-stock="${2:?usage: telemetry-harness.sh <candidate-binary> <stock-binary>}"
+# Resolve both binaries before any `cd`, so a relative path from the caller's
+# directory keeps working once the harness changes directory.
+candidate="$(realpath -e "${1:?usage: telemetry-harness.sh <candidate-binary> <stock-binary>}")"
+stock="$(realpath -e "${2:?usage: telemetry-harness.sh <candidate-binary> <stock-binary>}")"
+[ -x "$candidate" ] || { echo "candidate binary is not executable: $candidate" >&2; exit 1; }
+[ -x "$stock" ] || { echo "stock binary is not executable: $stock" >&2; exit 1; }
 script_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -P "$script_dir/../.." && pwd)"
 collector_script="$repo_dir/script/unguarded/collector.ts"

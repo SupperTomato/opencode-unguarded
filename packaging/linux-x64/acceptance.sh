@@ -8,8 +8,9 @@
 # touching the build machine's real installation or the stock OpenCode install.
 set -euo pipefail
 
-package="${1:?usage: acceptance.sh <extracted-package-dir> <archive>}"
-archive="${2:?usage: acceptance.sh <extracted-package-dir> <archive>}"
+# Canonicalize before any `cd`: the release job passes a relative archive path.
+package="$(realpath -e "${1:?usage: acceptance.sh <extracted-package-dir> <archive>}")"
+archive="$(realpath -e "${2:?usage: acceptance.sh <extracted-package-dir> <archive>}")"
 script_dir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="$(mktemp -d)"
 cleanup() {
