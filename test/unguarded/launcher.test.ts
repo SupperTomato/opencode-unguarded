@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-const repoRoot = process.env.UNGUARDED_SOURCE_ROOT ?? path.join(import.meta.dir, "..", "..")
+const repoRoot = process.env.UNGUARDED_DERIVATIVE_ROOT ?? path.join(import.meta.dir, "..", "..")
 const launcherSource = path.join(repoRoot, "packaging/linux-x64/launcher")
 const launcher = fs.readFileSync(launcherSource, "utf8")
 

@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { loadManifest } from "../../script/unguarded/apply"
 
-const repoRoot = process.env.UNGUARDED_SOURCE_ROOT ?? path.join(import.meta.dir, "..", "..")
+const repoRoot = process.env.UNGUARDED_DERIVATIVE_ROOT ?? path.join(import.meta.dir, "..", "..")
 const manifest = loadManifest("2.1.2")
 
 describe("manifest records", () => {

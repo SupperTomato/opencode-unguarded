@@ -148,6 +148,7 @@ jobs:
       - name: Run derivative tooling tests
         env:
           UNGUARDED_SOURCE_ROOT: ${{ github.workspace }}/opencode-src
+          UNGUARDED_DERIVATIVE_ROOT: ${{ github.workspace }}
           UNGUARDED_UPSTREAM: ${{ github.workspace }}/.check/pristine
         run: bun test ./test/unguarded/
 

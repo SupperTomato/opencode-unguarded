@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-const repoRoot = process.env.UNGUARDED_SOURCE_ROOT ?? path.join(import.meta.dir, "..", "..")
+const repoRoot = process.env.UNGUARDED_DERIVATIVE_ROOT ?? path.join(import.meta.dir, "..", "..")
 const install = path.join(repoRoot, "packaging/linux-x64/install.sh")
 const uninstall = path.join(repoRoot, "packaging/linux-x64/uninstall.sh")
 

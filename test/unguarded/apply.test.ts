@@ -5,6 +5,7 @@ import path from "node:path"
 import {
   apply,
   loadManifest,
+  patchDir,
   plan,
   sha256,
   transforms,
@@ -15,7 +16,7 @@ import {
 
 const manifest = loadManifest("2.1.2")
 const upstream = process.env.UNGUARDED_UPSTREAM
-const repoRoot = process.env.UNGUARDED_SOURCE_ROOT ?? path.join(import.meta.dir, "..", "..")
+const repoRoot = process.env.UNGUARDED_DERIVATIVE_ROOT ?? process.env.UNGUARDED_SOURCE_ROOT ?? path.join(import.meta.dir, "..", "..")
 
 function requireFixture(directory: string | undefined, name: string) {
   if (!directory) throw new Error(`${name} fixture is required; set UNGUARDED_UPSTREAM to a checkout at the pinned commit`)
@@ -242,8 +243,9 @@ describe("reviewed output completeness", () => {
   })
 
   test("every reviewed output is present on disk", () => {
+    const source = process.env.UNGUARDED_DERIVATIVE_ROOT ?? repoRoot
     for (const entry of manifest.files) {
-      expect(fs.existsSync(path.join(repoRoot, "patches", manifest.upstream.version, entry.file))).toBe(true)
+      expect(fs.existsSync(path.join(source, "patches", manifest.upstream.version, entry.file))).toBe(true)
     }
   })
 })
