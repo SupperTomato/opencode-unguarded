@@ -145,6 +145,12 @@ jobs:
         # the frozen install first repairs a partially linked dependency tree
         # (for example a workspace whose hoisted tsconfig did not link), which
         # would otherwise fail an unrelated package.
+        env:
+          # The Astro packages run `astro sync` while typechecking, which writes
+          # generated content types. Running them concurrently with a cold cache
+          # made unrelated doc sites fail to resolve a hoisted tsconfig, so the
+          # canonical check runs one package at a time here.
+          TURBO_CONCURRENCY: "1"
         run: |
           bun install --frozen-lockfile
           bun run check
