@@ -1,0 +1,58 @@
+name: discover-upstream
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve current upstream version
+        id: upstream
+        run: |
+          set -euo pipefail
+          VERSION=$(curl -fsSL --retry 3 https://registry.npmjs.org/@opencode/cli/latest | jq -r .version)
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Unexpected version from registry: $VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ -f "manifests/${VERSION}.json" ]; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report unsupported version
+        if: steps.upstream.outputs.supported == 'false'
+        run: |
+          echo "::notice::Upstream ${{ steps.upstream.outputs.version }} has no reviewed manifest; not building."
+          echo "Add manifests/${{ steps.upstream.outputs.version }}.json after auditing the new source."
+
+      - name: Check for existing release
+        if: steps.upstream.outputs.supported == 'true'
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.upstream.outputs.version }}-unguarded.1"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger build
+        if: steps.upstream.outputs.supported == 'true' && steps.release.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+        run: gh workflow run build-release.yml -f upstream_version="$VERSION" -f publish=false

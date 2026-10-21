@@ -1,4 +1,5 @@
-import { sentryVitePlugin } from "@sentry/vite-plugin"
+// opencode-unguarded: telemetry disabled at build time
+const sentryVitePlugin = (..._args: unknown[]) => false
 import { fileURLToPath } from "node:url"
 import { defineConfig } from "vite"
 import desktopPlugin, { channel } from "./vite.js"

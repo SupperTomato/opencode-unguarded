@@ -2,16 +2,13 @@ import { expect, test } from "bun:test"
 import { Effect } from "effect"
 import { Otlp } from "../src/observability/otlp.js"
 
-test("exports a span through the configured OTLP trace endpoint", async () => {
+// opencode-unguarded: telemetry disabled at build time: this derivative must not create OTLP exporters.
+test("tracingLayer never exports spans even when an endpoint is configured", async () => {
   const requests: unknown[] = []
-  const headers: string[] = []
-  const paths: string[] = []
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     async fetch(request) {
-      paths.push(new URL(request.url).pathname)
-      headers.push(request.headers.get("x-otel-test") ?? "")
       requests.push(await request.json())
       return Response.json({})
     },
@@ -26,20 +23,14 @@ test("exports a span through the configured OTLP trace endpoint", async () => {
       yield* Effect.void.pipe(Effect.withSpan("otlp-smoke"), Effect.provide(tracing))
     }).pipe(Effect.scoped, Effect.runPromise)
 
-    expect(requests).toHaveLength(1)
-    expect(paths).toEqual(["/v1/traces"])
-    expect(headers).toEqual(["present"])
-    expect(requests[0]).toMatchObject({
-      resourceSpans: [
-        {
-          resource: {
-            attributes: expect.arrayContaining([{ key: "service.name", value: { stringValue: "opencode" } }]),
-          },
-          scopeSpans: [{ spans: [expect.objectContaining({ name: "otlp-smoke" })] }],
-        },
-      ],
-    })
+    expect(requests).toHaveLength(0)
   } finally {
     server.stop(true)
   }
+})
+
+test("loggers never create an OTLP logger even when an endpoint is configured", () => {
+  expect(Otlp.loggers({ endpoint: "http://127.0.0.1:1" }, { client: "test", version: "1.0.0", channel: "local" })).toEqual(
+    [],
+  )
 })

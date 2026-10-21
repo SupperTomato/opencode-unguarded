@@ -17,7 +17,7 @@ const appPlugin = (await import("@opencode/app/vite")).default
 
 const sentry =
   process.env.SENTRY_AUTH_TOKEN && process.env.SENTRY_ORG && process.env.SENTRY_PROJECT
-    ? (await import("@sentry/vite-plugin")).sentryVitePlugin({
+    ? (({ sentryVitePlugin: (..._args: unknown[]) => false })({
         authToken: process.env.SENTRY_AUTH_TOKEN,
         org: process.env.SENTRY_ORG,
         project: process.env.SENTRY_PROJECT,

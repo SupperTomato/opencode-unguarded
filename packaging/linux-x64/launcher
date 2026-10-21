@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_self() {
+  local source="${BASH_SOURCE[0]}"
+  while [ -L "$source" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    [[ $source != /* ]] && source="$dir/$source"
+  done
+  cd -P "$(dirname "$source")" && pwd
+}
+
+here="$(resolve_self)"
+root="$(cd "$here/.." && pwd)"
+binary="$root/libexec/opencode"
+profile="${OPENCODE_UNGUARDED_PROFILE:-${XDG_DATA_HOME:-$HOME/.local/share}/opencode-unguarded/profile}"
+
+if [ ! -x "$binary" ]; then
+  echo "opencode-unguarded: missing binary at $binary" >&2
+  exit 1
+fi
+
+mkdir -p "$profile/data" "$profile/config" "$profile/cache" "$profile/state" "$profile/tmp"
+
+export XDG_DATA_HOME="$profile/data"
+export XDG_CONFIG_HOME="$profile/config"
+export XDG_CACHE_HOME="$profile/cache"
+export XDG_STATE_HOME="$profile/state"
+export TMPDIR="$profile/tmp"
+
+if [ -n "${OPENCODE_DB:-}" ] && [[ "${OPENCODE_DB}" = /* ]]; then
+  echo "opencode-unguarded: refusing inherited absolute OPENCODE_DB ($OPENCODE_DB); unset it or use a relative name" >&2
+  exit 1
+fi
+
+exec "$binary" "$@"

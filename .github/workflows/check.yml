@@ -1,37 +1,54 @@
 name: check
 
 on:
-  push:
-    branches: [dev]
   pull_request:
-    branches: [dev]
-  workflow_dispatch:
+  push:
+    branches: [unguarded]
 
-concurrency:
-  group: ${{ case(github.ref == 'refs/heads/dev', format('{0}-{1}', github.workflow, github.run_id), format('{0}-{1}', github.workflow, github.event.pull_request.number || github.ref)) }}
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 jobs:
-  check:
-    name: typecheck
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+  verify:
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          # A pull request checks out its merge into the current base; the first parent is that base.
-          fetch-depth: 2
+          node-version: "24"
 
       - name: Setup Bun
-        uses: ./.github/actions/setup-bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
 
-      - name: Run checks
-        run: bun run check
+      - name: Validate manifests
+        run: |
+          for file in manifests/*.json; do
+            jq -e '.upstream.commit | test("^[0-9a-f]{40}$")' "$file" > /dev/null
+            jq -e '.upstream.version' "$file" > /dev/null
+            jq -e '.removals | length > 0' "$file" > /dev/null
+          done
 
-      # Every GUI package file (app, desktop, gui-extensions, ui, session-ui) a pull request adds or edits must be free of
-      # oxlint problems, warn-level rules (anti-slop) included. Other packages are not affected.
-      - name: Lint changed files
-        if: github.event_name == 'pull_request'
-        # Against the merge's first parent, so base-branch commits the pull request has not merged are not counted as its
-        # changes (the event's base SHA can predate them).
-        run: bun run lint:changed HEAD^1
+      - name: Install derivative tooling dependencies
+        run: bun install
+
+      - name: Run derivative tests
+        run: bun test ./test/unguarded/
+
+      - name: Verify checked-in source is fully patched
+        run: |
+          for file in manifests/*.json; do
+            VERSION=$(jq -r .upstream.version "$file")
+            bun script/unguarded/apply.ts "$VERSION" --root . --check
+          done
+          bun script/unguarded/telemetry.ts . --check
+
+      - name: Verify workflows parse
+        run: |
+          for file in .github/workflows/*.yml; do
+            bun -e "const yaml=require('yaml'); const fs=require('fs'); yaml.parse(fs.readFileSync('$file','utf8'))" 2>/dev/null || \
+              python3 -c "import yaml,sys; yaml.safe_load(open('$file'))"
+          done
