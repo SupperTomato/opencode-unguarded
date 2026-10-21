@@ -140,10 +140,7 @@ function disableSentry(root: string, changes: Change[]) {
           `// ${MARKER}\nconst sentryVitePlugin = (..._args: unknown[]) => false\n`,
         )
         if (replaced !== content) return replaced
-        return content.replace(
-          /await import\("@sentry\/vite-plugin"\)\)\.sentryVitePlugin/g,
-          `({ sentryVitePlugin: (..._args: unknown[]) => false })`,
-        )
+        return content.replace(/^const sentry =\n[\s\S]*?\n    : false\r?\n/m, `// ${MARKER}\nconst sentry = false\n`)
       },
       changes,
     )

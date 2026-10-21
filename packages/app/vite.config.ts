@@ -6,22 +6,8 @@ import desktopPlugin, { channel } from "./vite.js"
 import { icons } from "./vite.icons"
 import { serviceWorker } from "./vite.pwa"
 
-const sentry =
-  process.env.SENTRY_AUTH_TOKEN && process.env.SENTRY_ORG && process.env.SENTRY_PROJECT
-    ? sentryVitePlugin({
-        authToken: process.env.SENTRY_AUTH_TOKEN,
-        org: process.env.SENTRY_ORG,
-        project: process.env.SENTRY_PROJECT,
-        telemetry: false,
-        release: {
-          name: process.env.SENTRY_RELEASE ?? process.env.VITE_SENTRY_RELEASE,
-        },
-        sourcemaps: {
-          assets: "./dist/**",
-          filesToDeleteAfterUpload: "./dist/**/*.map",
-        },
-      })
-    : false
+// opencode-unguarded: telemetry disabled at build time
+const sentry = false
 
 export default defineConfig({
   plugins: [

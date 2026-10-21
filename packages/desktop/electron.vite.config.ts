@@ -15,22 +15,8 @@ function resolveChannel() {
 
 const appPlugin = (await import("@opencode/app/vite")).default
 
-const sentry =
-  process.env.SENTRY_AUTH_TOKEN && process.env.SENTRY_ORG && process.env.SENTRY_PROJECT
-    ? (({ sentryVitePlugin: (..._args: unknown[]) => false })({
-        authToken: process.env.SENTRY_AUTH_TOKEN,
-        org: process.env.SENTRY_ORG,
-        project: process.env.SENTRY_PROJECT,
-        telemetry: false,
-        release: {
-          name: process.env.SENTRY_RELEASE ?? process.env.VITE_SENTRY_RELEASE,
-        },
-        sourcemaps: {
-          assets: "./out/renderer/**",
-          filesToDeleteAfterUpload: "./out/renderer/**/*.map",
-        },
-      })
-    : false
+// opencode-unguarded: telemetry disabled at build time
+const sentry = false
 
 // Every module the entry reaches through static imports lands in one chunk. Automatic splitting
 // otherwise fragments the initial graph into ~50 files shared with lazy routes, and each file costs
