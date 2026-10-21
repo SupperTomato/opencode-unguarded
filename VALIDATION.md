@@ -138,6 +138,41 @@ telemetry harness passed: stock emitted telemetry, candidate emitted none
 | Stock 2.1.2 and candidate run simultaneously on separate ports | local run, both servers listening |
 | Installation and removal against the built binary | local `install.sh` / `uninstall.sh` run |
 
+## Published artifact
+
+| Field | Value |
+| --- | --- |
+| Release | https://github.com/SupperTomato/opencode-unguarded/releases/tag/v2.1.2-unguarded.3 |
+| Release target commit | `caabdd878334a05f699718a3dcdc5cfc69a79855` |
+| Build workflow run | https://github.com/SupperTomato/opencode-unguarded/actions/runs/39561462354 |
+| Archive SHA-256 | verified with the published `checksums.sha256` |
+| Executable SHA-256 | `3bc1332bc20084d366cee41cc733a6b455a86b6fcb12bbdedbc4bf7acdb1c50a` |
+| Launcher SHA-256 | `e4a9b5932aaf7f2102b430cce4c6154ae22b761011258bcd0a9c067b53323041` |
+| Manifest SHA-256 | `9ac94dea9a03721f120c3ef6cf45514a659ba45bc6567d3ffa99b66ba8753ff8` |
+| Toolchain | Bun 1.4.2, Node v24.21.0 |
+
+The downloaded archive was verified against its checksum, extracted, and checked:
+
+- `verify3` byte comparison: the installed executable and launcher match the
+  hashes recorded in `BUILD-INFO.json`.
+- `validate.ts --release` against the downloaded binary: 6/6 gates pass.
+- Telemetry harness against the downloaded binary: candidate `[]`, stock control
+  emitted `/v1/logs` and `/v1/traces`.
+
+### Installed acceptance
+
+| Check | Result |
+| --- | --- |
+| Candidate installed to `~/.local/opt/opencode-unguarded` | installed, previous `.2` kept as a rollback copy |
+| Candidate `--version` | `opencode v2.1.2-unguarded.3` |
+| Production `~/.local/bin/opencode` unchanged | SHA-256 `29eec08dde53b320744ed7a878c2e9ee77a2992dcf21bd023a4762dac94d8361`, version `1.19.3` |
+| `debug paths` | profile, DB, and state all under `~/.local/share/opencode-unguarded/profile` |
+| `upgrade --method npm` | refused with derivative guidance, exit 1 |
+| Candidate service registration | `derivative: "opencode-unguarded"`, port 47499 |
+| Stock 2.1.2 and candidate simultaneously | two listeners (49374 and 47499), two distinct registrations |
+| Stopping the candidate | stock service and registration unaffected |
+| Functional task in a disposable project | read `math.py`, reported `add(2, 3) == 6`, no edits |
+
 ## Known limits
 
 - The telemetry runtime check exercises CLI server startup. Browser and desktop
@@ -151,3 +186,10 @@ telemetry harness passed: stock emitted telemetry, candidate emitted none
   but does not claim independent rebuild equality.
 - Lifecycle destructiveness is tested with disposable installations and fixture
   roots. The production installation receives only read-only identity checks.
+- A stale `.2` candidate service was found running from an earlier test profile
+  (`/tmp/rel2-profile`) holding port 47499. Its registration carried no derivative
+  marker, which is exactly the `.2` defect this revision fixes. It was stopped
+  before the coexistence test. No production process was involved.
+- The `.2` profile at `~/.local/share/opencode-unguarded/profile` was reused in
+  place; revision 3 creates no incompatible schema change in that directory and
+  the candidate started normally against it.
