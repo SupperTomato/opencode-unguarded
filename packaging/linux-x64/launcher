@@ -22,17 +22,48 @@ if [ ! -x "$binary" ]; then
   exit 1
 fi
 
+case "$profile" in
+  /*) ;;
+  *)
+    echo "opencode-unguarded: OPENCODE_UNGUARDED_PROFILE must be an absolute path (got: $profile)" >&2
+    exit 1
+    ;;
+esac
+
 mkdir -p "$profile/data" "$profile/config" "$profile/cache" "$profile/state" "$profile/tmp"
+profile_real="$(cd -P "$profile" && pwd)"
+
+# Inherited global overrides would point the candidate at another installation's
+# configuration (or at production). Refuse rather than silently follow them.
+for name in OPENCODE_CONFIG_DIR OPENCODE_CONFIG OPENCODE_CONFIG_CONTENT; do
+  if [ -n "${!name:-}" ]; then
+    echo "opencode-unguarded: refusing inherited $name; it would escape this profile." >&2
+    echo "opencode-unguarded: unset it, or place config in $profile_real/config/opencode." >&2
+    exit 1
+  fi
+done
+
+# The database must stay inside the candidate profile. Upstream resolves relative
+# names against the data directory without containment checks, so validate here.
+if [ -n "${OPENCODE_DB:-}" ]; then
+  if [[ "${OPENCODE_DB}" != ":memory:" ]]; then
+    case "${OPENCODE_DB}" in
+      /*)
+        echo "opencode-unguarded: refusing absolute OPENCODE_DB (${OPENCODE_DB}); it would escape this profile." >&2
+        exit 1
+        ;;
+      *..*)
+        echo "opencode-unguarded: refusing OPENCODE_DB containing '..' (${OPENCODE_DB})." >&2
+        exit 1
+        ;;
+    esac
+  fi
+fi
 
 export XDG_DATA_HOME="$profile/data"
 export XDG_CONFIG_HOME="$profile/config"
 export XDG_CACHE_HOME="$profile/cache"
 export XDG_STATE_HOME="$profile/state"
 export TMPDIR="$profile/tmp"
-
-if [ -n "${OPENCODE_DB:-}" ] && [[ "${OPENCODE_DB}" = /* ]]; then
-  echo "opencode-unguarded: refusing inherited absolute OPENCODE_DB ($OPENCODE_DB); unset it or use a relative name" >&2
-  exit 1
-fi
 
 exec "$binary" "$@"

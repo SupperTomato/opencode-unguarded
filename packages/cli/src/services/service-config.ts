@@ -38,12 +38,16 @@ const decodeLegacy = Schema.decodeUnknownOption(
 )
 const decodeRegistration = Schema.decodeUnknownEffect(Schema.fromJsonString(Service.Info))
 
+// opencode-unguarded: derivative lifecycle: a distinct channel keeps registrations, ports, and databases apart.
+export const DERIVATIVE_CHANNEL = "unguarded"
+
 export function filename(channel = OPENCODE_CHANNEL) {
   if (channel === "latest" || channel === "dev" || channel === "beta" || channel === "next") return "service.json"
   return `service-${channel.replace(/[^a-zA-Z0-9._-]/g, "-")}.json`
 }
 
 export function defaultPort(channel = OPENCODE_CHANNEL, platform = process.platform) {
+  if (channel === DERIVATIVE_CHANNEL) return 47499
   const port = channelPort(channel)
   // Windows hands out 0xC000-0xFFFF for outgoing connections, and Hyper-V and WinNAT reserve blocks of that range at
   // boot, so a port there can fail as in use while nothing listens on it. Moving into the 0xB000 block keeps the low

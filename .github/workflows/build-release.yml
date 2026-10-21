@@ -94,12 +94,15 @@ jobs:
       - name: Apply telemetry removal
         run: bun script/unguarded/telemetry.ts opencode-src
 
+      - name: Apply derivative lifecycle patches
+        run: bun script/unguarded/lifecycle.ts opencode-src
+
       - name: Verify no unintended source drift
         run: |
           git -C opencode-src diff --check
           CHANGED=$(git -C opencode-src diff --name-only)
           echo "$CHANGED"
-          if printf '%s' "$CHANGED" | grep -Ev '^(packages/(core/src/plugin/system-prompt|util/src|app/src/entry\.tsx|app/vite\.config\.ts|desktop/electron\.vite\.config\.ts|desktop/src/renderer/startup/sentry\.ts)|packages/util/test/observability-otlp\.test\.ts)'; then
+          if printf '%s' "$CHANGED" | grep -Ev '^(packages/(core/src/plugin/system-prompt|core/src/session/runner/prompt/system\.txt|util/src|app/src/entry\.tsx|app/vite\.config\.ts|desktop/electron\.vite\.config\.ts|desktop/src/renderer/startup/sentry\.ts|cli/src/commands/handlers/upgrade\.ts|cli/src/services/service-config\.ts|cli/src/database-path\.ts)|packages/util/test/observability-otlp\.test\.ts)'; then
             echo "Unexpected files changed by patches" >&2
             exit 1
           fi
@@ -118,7 +121,7 @@ jobs:
         working-directory: opencode-src/packages/cli
         env:
           OPENCODE_VERSION: ${{ inputs.upstream_version }}
-          OPENCODE_CHANNEL: latest
+          OPENCODE_CHANNEL: unguarded
         run: bun run script/build.ts --target=opencode-linux-x64 --skip-install
 
       - name: Verify artifact

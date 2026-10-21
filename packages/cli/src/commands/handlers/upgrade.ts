@@ -12,6 +12,22 @@ export default Runtime.handler(
   Effect.fn("cli.upgrade")(
     function* (input) {
       intro("Upgrade")
+      // opencode-unguarded: derivative lifecycle: the derivative does not self-update through upstream.
+      if (!Option.getOrUndefined(input.method)) {
+        return yield* Effect.fail(
+          new Error(
+            [
+              "opencode-unguarded does not self-update through the upstream installer.",
+              "",
+              "Update this derivative from its own releases:",
+              "  https://github.com/SupperTomato/opencode-unguarded/releases",
+              "",
+              "Download the newer opencode-unguarded-linux-x64.tar.gz, verify checksums.sha256,",
+              "and replace this installation. Your profile at $OPENCODE_UNGUARDED_PROFILE is kept.",
+            ].join("\n"),
+          ),
+        )
+      }
       const updater = yield* Updater.Service
       const method = Option.getOrUndefined(input.method) ?? (yield* updater.method())
       if (!method)
