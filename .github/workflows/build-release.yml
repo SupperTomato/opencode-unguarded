@@ -255,15 +255,6 @@ jobs:
             "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/telemetry-harness.sh" "$STAGE/acceptance.sh"
           cp LICENSE "$STAGE/LICENSE"
           cp THIRD_PARTY_NOTICES.md "$STAGE/THIRD_PARTY_NOTICES.md"
-          # A published package must be installable and removable on its own:
-          # the packaged installer, launcher, and uninstaller are exercised from
-          # the extracted archive before it is published.
-          ACCEPT="$RUNNER_TEMP/acceptance"
-          rm -rf "$ACCEPT"
-          mkdir -p "$ACCEPT"
-          tar xzf opencode-unguarded-linux-x64.tar.gz -C "$ACCEPT"
-          cp packaging/linux-x64/model-stub.ts "$ACCEPT/opencode-unguarded/model-stub.ts"
-          bash "$ACCEPT/opencode-unguarded/acceptance.sh" "$ACCEPT/opencode-unguarded" "$opencode-unguarded-linux-x64.tar.gz"
           jq -n \
             --arg v "$VERSION" \
             --arg c "$(jq -r .upstream.commit "manifests/$VERSION.json")" \
@@ -286,6 +277,16 @@ jobs:
           cat "$STAGE/BUILD-INFO.json"
           tar -C package -czf "opencode-unguarded-linux-x64.tar.gz" opencode-unguarded
           sha256sum opencode-unguarded-linux-x64.tar.gz > checksums.sha256
+
+          # A published package must be installable and removable on its own:
+          # the packaged installer, launcher, and uninstaller are exercised from
+          # the extracted archive before it is uploaded.
+          ACCEPT="$RUNNER_TEMP/acceptance"
+          rm -rf "$ACCEPT"
+          mkdir -p "$ACCEPT"
+          tar xzf opencode-unguarded-linux-x64.tar.gz -C "$ACCEPT"
+          cp packaging/linux-x64/model-stub.ts "$ACCEPT/opencode-unguarded/model-stub.ts"
+          bash "$ACCEPT/opencode-unguarded/acceptance.sh" "$ACCEPT/opencode-unguarded" "$opencode-unguarded-linux-x64.tar.gz"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
