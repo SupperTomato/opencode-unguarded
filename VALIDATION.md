@@ -13,7 +13,7 @@ metadata, not to this file.
 | Tag | v2.1.2 |
 | Commit | a517687fde98a7329ada3ae644a01a9fc6c4e99e |
 | npm integrity | `sha512-9mBVQTO3WkKzP300NtHuhmXkHTfR2JwFB0AKRGRw4Lt3SNEwo5V4pzXXrwlpRAHoQmINLPuFPGOmn1kxYZdmMQ==` |
-| Derivative revision | 4 |
+| Derivative revision | 5 |
 | Target | linux-x64 |
 | Toolchain | Bun 1.4.2, Node 24 |
 
@@ -27,9 +27,12 @@ is the previous generation; its source layout does not apply here.
 | `.1` | Missed the shared base prompt and some template routes; verifiers accepted incomplete patches. Do not use. |
 | `.2` | Added route coverage but left these defects: `--method` reached the upstream installer; startup/TUI paths were unguarded; source identity was version-only; launcher and patch targets followed escaping symlinks; telemetry checks trusted markers; service migration accepted equal versions; uninstall used upstream cleanup; route tests duplicated routing. |
 | `.3` | Exact fingerprints and the updater boundary, but a follow-up review found: uninstall could delete a profile inside the install root; the shell uninstaller used the wrong registration path and could remove another install; live discovery ignored the derivative marker; a stale PID could be signalled; nested profile directories and the default database were unchecked; database overrides were ignored; installer checksums were optional and link validation ran after activation; patch planning created directories before preflight; and release CI named two derivative suites it never copied, running 20 CLI tests instead of 26. Superseded. |
+| `.4` | Canonical removal and installer preflight, but a later review found: a 404 health response still authorized a signal; another derivative revision was indistinguishable; uninstall did not prove the executable belonged to the installation; installer rollback missed some post-activation failures; raw-binary containment was incomplete; dry run wrote files; a synthesized HEAD passed identity checks; and the telemetry harness exercised no session. Superseded. |
 
-Revision 4 closes those defects. Its release run executed 32 CLI tests across 6
-files, the client and util derivative suites, and the canonical check.
+Revision 5 closes those defects. Its release run executed 32 CLI tests across 6
+files, 71 client tests, 4 util tests, 33 core tests, 102 derivative tooling tests,
+the canonical check, a session-aware telemetry harness, and packaged acceptance
+against the extracted archive.
 
 ## How to reproduce
 
@@ -141,89 +144,86 @@ telemetry harness passed: stock emitted telemetry, candidate emitted none
 
 ## Revision 4 acceptance
 
+Revision 4 closed the installer, discovery, and removal defects found in `.3`.
+It was superseded because a 404 health response could still authorize a signal,
+another derivative revision was indistinguishable from the running one, and
+installer rollback did not cover every failure after activation.
+
+## Revision 5 acceptance
+
 ### Source and tooling
 
 | Check | Evidence |
 | --- | --- |
-| 94 derivative tooling tests | `cd test && bun test unguarded/` |
-| 6/6 validation gates on the downloaded binary | `validate.ts --upstream ... --binary ... --release` |
-| Canonical `bun run check` | 34/34 typecheck tasks; lint clean |
-| CLI suites: 32 tests / 6 files | release run log |
-| Client derivative suite: 4 tests | release run log |
-| Util derivative suites: 4 tests | release run log |
-| Telemetry harness with stock control | candidate `[]`, stock emitted logs and traces |
+| 102 derivative tooling tests | `cd test && bun test unguarded/` |
+| 6/6 validation gates on the final binary | `validate.ts --release ... --binary` |
+| Canonical `bun run check` | 34/34 typecheck tasks |
+| CLI suites: 32 tests / 6 files | local run and release log |
+| Client suites: 71 tests / 6 files | local run and release log |
+| Util derivative + OTLP: 4 tests | local run and release log |
+| Core routing/plan/permission: 33 tests | local run and release log |
+| Telemetry harness with stock control | candidate `[]`; stock emitted logs and traces |
 
 ### Defect-specific regressions
 
 | Defect | Test |
 | --- | --- |
-| Removal deleting the profile | installer rejects an installation containing the profile; CLI re-checks canonical overlap |
-| Wrong-install removal | shell uninstaller delegates to the requested prefix's own launcher |
-| Unverified ownership | probe requires the derivative marker and a matching live PID |
-| Stale PID signalling | termination refuses when the registered endpoint does not confirm the owner |
-| Nested escapes / default DB | launcher rejects symlinked `*/opencode` and a symlinked default database |
-| Ignored DB overrides | `:memory:`, plain filename honored; absolute/traversing/nested rejected |
-| Optional checksums | installer requires an entry for the exact archive and verifies its digest |
-| Link validation after activation | link preflight runs before the previous installation moves |
-| Preflight writes | late protected-file rejection leaves the filesystem unchanged |
-| Unverified Git identity | worktree metadata is followed; ancestry is proven; synthesized HEAD rejected |
-| CI not running derivative suites | staging step copies them and release logs show 32 tests / 6 files |
+| 404 response authorized a signal | `packages/client/test/unguarded-termination.test.ts` — the unrelated process stays alive and receives no signal |
+| Another derivative revision adopted | `unguarded-ownership.test.ts`, `unguarded-service.test.ts` |
+| Installation identity ignored | ownership test rejects a live owner from another installation |
+| Stale dead owner blocked recovery | termination clears the registration without signalling |
+| Decoy uninstall root accepted | `verifyInstallationOwnership` requires metadata, revision, and the running executable inside the root |
+| Dry run wrote files | snapshot test over the whole profile, plus packaged acceptance |
+| Post-activation failure not rolled back | installer test restores the previous program and link |
+| Missing metadata hashes accepted | installer test omits each hash field |
+| Synthesized pinned HEAD accepted | apply test builds a real repository whose HEAD names a missing commit |
+| Archive could not prove the tree | identity tests require Git metadata unless archive bytes are explicitly allowed |
+| Harness missed a crash | harness self-check against a crashing binary |
+| Harness exercised no session | harness self-check against a binary whose session fails |
 
-### Installed acceptance (revision 4)
+### Installed acceptance (revision 5)
 
 | Check | Result |
 | --- | --- |
-| Installed executable hash | `51c1edb52f400b2b0dd03eae4dd3fd8600ee82bb04f4e2be7524e8fc456470bf` |
-| Installed launcher hash | `855da306253b07dc3dce55214fd0d0b28ad7255222650c4214fc2609f2f36b52` |
-| Published executable/launcher hashes | identical to the installed files |
+| Installed executable hash | `01ec20887832bd327358974243b1e374c7175a5f1c8053ce63156245d34cc9ce` |
+| Installed launcher hash | `634276adfb694234d3e713a5e9cfed750d475843051340266c4b8d14de41207f` |
+| Published vs installed | identical executable, launcher, and metadata hashes |
 | Production executable unchanged | `29eec08dde53b320744ed7a878c2e9ee77a2992dcf21bd023a4762dac94d8361`, `1.19.3` |
-| Candidate `--version` | `opencode v2.1.2-unguarded.4` |
+| Candidate `--version` | `opencode v2.1.2-unguarded.5` |
 | `debug paths` | profile data and database under the candidate profile |
-| Direct binary without launcher | still uses the candidate default profile |
+| Live service identity | registration and `/api/info` both report revision `5` and the same installation id |
+| Dry run | profile hash and mode snapshot unchanged; no added or removed files |
+| Uninstall with the service running | program and link removed, service stopped, durable profile and unrelated files intact |
 | Stock 2.1.2 + candidate simultaneously | 49374 and 47499, distinct registrations |
 | Stop candidate only | stock service and registration unaffected |
-| Functional task | read `math.py`, reported `add(2, 3) == 6`, no edits |
+| Functional task | read `math.py`, reported `add(2, 3) == 5`, no edits |
+| Packaged acceptance of the downloaded archive | all checks passed |
 
 ## Published artifact
 
 | Field | Value |
 | --- | --- |
-| Release | https://github.com/SupperTomato/opencode-unguarded/releases/tag/v2.1.2-unguarded.4 |
-| Release target commit | `5fa4038c14e7e01cc318e6213cdb2fa80408695f` |
-| Build workflow run | https://github.com/SupperTomato/opencode-unguarded/actions/runs/39613438240 |
+| Release | https://github.com/SupperTomato/opencode-unguarded/releases/tag/v2.1.2-unguarded.5 |
+| Release target commit | `5bde1973401d77d10b5f442d00f3e123f338550b` |
+| Build/publish run | https://github.com/SupperTomato/opencode-unguarded/actions/runs/39643855402 |
 | Archive SHA-256 | verified with the published `checksums.sha256` |
-| Executable SHA-256 | `51c1edb52f400b2b0dd03eae4dd3fd8600ee82bb04f4e2be7524e8fc456470bf` |
-| Launcher SHA-256 | `855da306253b07dc3dce55214fd0d0b28ad7255222650c4214fc2609f2f36b52` |
-| Manifest SHA-256 | `316bd747a020413db3726d24897d08eb5a9108711999a1db2268caa27e54d971` |
-| Toolchain | Bun 1.4.2, Node v24.21.0 |
+| Executable SHA-256 | `01ec20887832bd327358974243b1e374c7175a5f1c8053ce63156245d34cc9ce` |
+| Launcher SHA-256 | `634276adfb694234d3e713a5e9cfed750d475843051340266c4b8d14de41207f` |
+| Manifest SHA-256 | `04b9ceeca4e665377e65f1f8792128a41f66f70de56ae117775d11865fdebb0a` |
+| Toolchain | Bun 1.4.2, Node v24.22.0 |
 
-The downloaded archive was verified against its checksum, extracted, and checked:
-
-- `verify3` byte comparison: the installed executable and launcher match the
-  hashes recorded in `BUILD-INFO.json`.
-- `validate.ts --release` against the downloaded binary: 6/6 gates pass.
-- Telemetry harness against the downloaded binary: candidate `[]`, stock control
-  emitted `/v1/logs` and `/v1/traces`.
-
-### Installed acceptance
-
-| Check | Result |
-| --- | --- |
-| Candidate installed to `~/.local/opt/opencode-unguarded` | installed, previous `.2` kept as a rollback copy |
-| Candidate `--version` | `opencode v2.1.2-unguarded.3` |
-| Production `~/.local/bin/opencode` unchanged | SHA-256 `29eec08dde53b320744ed7a878c2e9ee77a2992dcf21bd023a4762dac94d8361`, version `1.19.3` |
-| `debug paths` | profile, DB, and state all under `~/.local/share/opencode-unguarded/profile` |
-| `upgrade --method npm` | refused with derivative guidance, exit 1 |
-| Candidate service registration | `derivative: "opencode-unguarded"`, port 47499 |
-| Stock 2.1.2 and candidate simultaneously | two listeners (49374 and 47499), two distinct registrations |
-| Stopping the candidate | stock service and registration unaffected |
-| Functional task in a disposable project | read `math.py`, reported `add(2, 3) == 6`, no edits |
+The downloaded archive was verified against its checksum and extracted. Its
+metadata matches the local manifest, the executable and launcher match the
+recorded hashes, `validate.ts --release` reports 6/6 gates, and the packaged
+acceptance script passed install, storage checks, read-only dry run, live service
+identity, a real session, and uninstall.
 
 ## Known limits
 
-- The telemetry runtime check exercises CLI server startup. Browser and desktop
-  integrations are verified by source identity, focused source tests, and type
-  checks, not by a running browser or Electron process.
+- The telemetry runtime check exercises server startup and a real session through
+  an offline model stub. Browser and desktop integrations are verified by source
+  identity, focused source tests, and type checks, not by a running browser or
+  Electron process.
 - Project and managed configuration keep upstream loading behavior by design; they
   are not redirected into the profile.
 - Provider-side moderation and model training are outside the client's control.
@@ -232,9 +232,12 @@ The downloaded archive was verified against its checksum, extracted, and checked
   but does not claim independent rebuild equality.
 - Lifecycle destructiveness is tested with disposable installations and fixture
   roots. The production installation receives only read-only identity checks.
-- A running `.2` service is not force-migrated. Its registration lacks the marker,
-  so revision 4 refuses to adopt it and reports that the registered service belongs
-  to a different distribution. Stop it before starting `.4`; the candidate never
-  signals a service it cannot verify.
+- A running `.2`, `.3`, or `.4` service is not force-migrated. Those registrations
+  lack the revision or installation identity revision 5 requires, so it refuses to
+  adopt them and reports the conflict. Stop the old service, then start `.5`; the
+  candidate never signals a service it cannot verify.
+- Termination safety relies on the authenticated live identity, the registration
+  identity, and (on Linux) the process start time. A forceful signal is never sent
+  to a PID that fails verification.
 - An unreadable Git metadata file is treated as an unverified source and rejected.
 - The optional profile-purge flag was removed; uninstall always keeps profile data.
