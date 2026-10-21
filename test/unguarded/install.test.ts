@@ -15,7 +15,24 @@ function makeArchive(options: { metadata?: Record<string, string>; escaping?: bo
   fs.mkdirSync(path.join(stage, "libexec"), { recursive: true })
   fs.writeFileSync(
     path.join(stage, "libexec", "opencode"),
-    `#!${process.execPath}\nconsole.log("opencode v2.1.2-unguarded.3")\n`,
+    `#!${process.execPath}
+const fs = require("node:fs")
+const path = require("node:path")
+const args = process.argv.slice(2)
+if (args[0] === "uninstall") {
+  // Emulate the derivative CLI removal contract: remove the owned installation,
+  // keep profile data, and remove only a link that points at this launcher.
+  const root = process.env.OPENCODE_UNGUARDED_ROOT
+  if (!root) { console.error("refusing to uninstall without a verified installation root"); process.exit(1) }
+  const link = path.join(process.env.HOME, ".local/bin/opencode-unguarded")
+  let owned = false
+  try { owned = fs.readlinkSync(link) === path.join(root, "bin/opencode-unguarded") } catch {}
+  fs.rmSync(root, { recursive: true, force: true })
+  if (owned) fs.rmSync(link, { force: true })
+  process.exit(0)
+}
+console.log("opencode v2.1.2-unguarded.3")
+`,
     { mode: 0o755 },
   )
   fs.copyFileSync(path.join(repoRoot, "packaging/linux-x64/launcher"), path.join(stage, "bin", "opencode-unguarded"))
@@ -89,7 +106,7 @@ describe("candidate installation", () => {
     fs.symlinkSync("/usr/bin/env", path.join(bindir, "opencode-unguarded"))
     const result = run(install, ["--archive", fixture.archive, "--prefix", fixture.prefix], { HOME: fixture.home })
     expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain("unrelated command")
+    expect(result.stderr).toContain("outside this installation")
     expect(fs.readlinkSync(path.join(bindir, "opencode-unguarded"))).toBe("/usr/bin/env")
   })
 
@@ -99,6 +116,54 @@ describe("candidate installation", () => {
     const result = run(install, ["--archive", fixture.archive, "--prefix", fixture.prefix, "--no-link"], { HOME: fixture.home })
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain("previous installation kept at")
+  })
+
+  test("refuses when the checksum file omits the archive", () => {
+    const fixture = makeArchive()
+    fs.writeFileSync(
+      path.join(fixture.work, "checksums.sha256"),
+      `${"0".repeat(64)}  some-other-file.tar.gz\n`,
+    )
+    const result = run(install, ["--archive", fixture.archive, "--prefix", fixture.prefix], { HOME: fixture.home })
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("has no entry")
+    expect(fs.existsSync(fixture.prefix)).toBe(false)
+  })
+
+  test("refuses when the checksum does not match the archive", () => {
+    const fixture = makeArchive()
+    fs.writeFileSync(
+      path.join(fixture.work, "checksums.sha256"),
+      `${"0".repeat(64)}  opencode-unguarded-linux-x64.tar.gz\n`,
+    )
+    const result = run(install, ["--archive", fixture.archive, "--prefix", fixture.prefix], { HOME: fixture.home })
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("checksum failed")
+  })
+
+  test("refuses an installation that contains the profile", () => {
+    const fixture = makeArchive()
+    const profile = path.join(fixture.home, ".local/share/opencode-unguarded/profile")
+    const result = run(
+      install,
+      ["--archive", fixture.archive, "--prefix", path.join(fixture.home, ".local/share/opencode-unguarded")],
+      { HOME: fixture.home, OPENCODE_UNGUARDED_PROFILE: profile },
+    )
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("containing the application profile")
+  })
+
+  test("a rejected link leaves the previous installation active", () => {
+    const fixture = makeArchive()
+    expect(run(install, ["--archive", fixture.archive, "--prefix", fixture.prefix, "--no-link"], { HOME: fixture.home }).exitCode).toBe(0)
+    const before = fs.readFileSync(path.join(fixture.prefix, "BUILD-INFO.json"), "utf8")
+    const bindir = path.join(fixture.home, ".local/bin")
+    fs.mkdirSync(bindir, { recursive: true })
+    fs.symlinkSync("/usr/bin/env", path.join(bindir, "opencode-unguarded"))
+    const result = run(install, ["--archive", fixture.archive, "--prefix", fixture.prefix], { HOME: fixture.home })
+    expect(result.exitCode).toBe(1)
+    expect(fs.readFileSync(path.join(fixture.prefix, "BUILD-INFO.json"), "utf8")).toBe(before)
+    expect(fs.existsSync(path.join(fixture.home, ".local/opt/.opencode-unguarded.previous" + ""))).toBe(false)
   })
 
   test("rejects a relative prefix", () => {
@@ -151,8 +216,10 @@ describe("candidate uninstall", () => {
     fs.mkdirSync(bindir, { recursive: true })
     fs.symlinkSync("/usr/bin/env", path.join(bindir, "opencode-unguarded"))
     const result = run(uninstall, ["--prefix", fixture.prefix, "--force"], { HOME: fixture.home })
+    // The shell uninstaller reports the link it will not touch, and the
+    // installation's own removal leaves it in place.
     expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain("Left")
+    expect(fs.existsSync(fixture.prefix)).toBe(false)
     expect(fs.readlinkSync(path.join(bindir, "opencode-unguarded"))).toBe("/usr/bin/env")
   })
 })

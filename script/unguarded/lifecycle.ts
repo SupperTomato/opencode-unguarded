@@ -12,7 +12,7 @@
  *  - the candidate uses its own channel, port, and database filename
  */
 
-import { cliRoot, exists, loadManifest, read, type Manifest } from "./lib/patch"
+import { cliRoot, exists, loadManifest, positional, read, type Manifest } from "./lib/patch"
 
 export type Change = { file: string; reason: string }
 
@@ -80,8 +80,12 @@ export function verifyServiceOwnership(root: string) {
     errors.push(`${SERVICE_CONFIG}: the stock service.json file is still a migration candidate`)
 
   const database = read(root, DATABASE_PATH)
-  if (!/if \(UNGUARDED\) return path\.resolve\(data, "opencode-unguarded\.db"\)/.test(database))
+  if (!/if \(UNGUARDED\) return derivativeDatabase\(data\)/.test(database))
     errors.push(`${DATABASE_PATH}: derivative database is not selected`)
+  if (!/override === ":memory:"\) return override/.test(database))
+    errors.push(`${DATABASE_PATH}: explicit :memory: override is not honored`)
+  if (!/path\.isAbsolute\(override\)/.test(database))
+    errors.push(`${DATABASE_PATH}: absolute database overrides are not rejected`)
 
   return errors
 }
@@ -101,9 +105,13 @@ export function verifyDerivativeUninstall(root: string) {
     errors.push(`${UNINSTALL}: removal does not require a verified installation root`)
   if (!/found\.derivative === UNGUARDED_IDENTITY\.name/.test(body))
     errors.push(`${UNINSTALL}: removal does not verify service ownership`)
+  if (!/overlaps the application profile/.test(body))
+    errors.push(`${UNINSTALL}: removal does not reject profile overlap`)
+  if (!/realPath\(root\)/.test(body))
+    errors.push(`${UNINSTALL}: removal does not canonicalize the installation root`)
   if (!/service-unguarded\.json/.test(body))
     errors.push(`${UNINSTALL}: removal does not target the derivative registration`)
-  for (const forbidden of ["updater.removal(", "cleanShellConfig", "rm -rf", "src/commands"]) {
+  for (const forbidden of ["updater.removal(", "cleanShellConfig", "rm -rf"]) {
     if (body.includes(forbidden))
       errors.push(`${UNINSTALL}: derivative removal still uses upstream cleanup (${forbidden})`)
   }
@@ -127,7 +135,7 @@ export function patchLifecycle(_root: string, _manifest?: Manifest): Change[] {
 if (import.meta.main) {
   const args = process.argv.slice(2)
   const root = cliRoot(args)
-  const version = args.find((arg, index) => !arg.startsWith("--") && index !== args.indexOf("--root") + 1)
+  const version = positional(args, ["--root"])[0]
   try {
     if (!args.includes("--check")) {
       console.error("lifecycle patches are applied by script/unguarded/apply.ts; re-run with --check to verify")

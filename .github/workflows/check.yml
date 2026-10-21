@@ -48,6 +48,9 @@ jobs:
             bun script/unguarded/telemetry.ts . --check
           done
 
+      - name: Canonical repository check
+        run: bun run check
+
       - name: Run derivative tests
         env:
           UNGUARDED_DERIVATIVE_ROOT: ${{ github.workspace }}
@@ -79,7 +82,7 @@ jobs:
             git -C "$DIR" remote add origin "$(jq -r .upstream.repository "$file")"
             git -C "$DIR" fetch -q --depth=1 origin "$COMMIT"
             git -C "$DIR" checkout -q FETCH_HEAD
-            UNGUARDED_DERIVATIVE_ROOT="$GITHUB_WORKSPACE" UNGUARDED_UPSTREAM="$DIR" bun test ./test/unguarded/apply.test.ts
+            (cd test && UNGUARDED_DERIVATIVE_ROOT="$GITHUB_WORKSPACE" UNGUARDED_UPSTREAM="$DIR" bun test unguarded/apply.test.ts)
             bun script/unguarded/apply.ts "$VERSION" --root "$DIR"
             bun script/unguarded/apply.ts "$VERSION" --root "$DIR" --check
             bun script/unguarded/lifecycle.ts --root "$DIR" --check

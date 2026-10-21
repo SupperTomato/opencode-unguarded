@@ -4,7 +4,7 @@ import { contenderPool, spawnServiceContender } from "../service-contender.js"
 import { defaultEnsureTiming, ensureTiming, type EnsureTiming } from "../service-timing.js"
 import { matchesVersion } from "../service-version.js"
 import { PtyHandoff } from "../pty-handoff.js"
-import { decide, fallback, headers, probeResult, same } from "../service-probe.js"
+import { decide, fallback, headers, ownedByThisBuild, probeResult, same } from "../service-probe.js"
 
 export * from "../service.js"
 export { headers }
@@ -25,6 +25,7 @@ export type Info = import("../service.js").Info
 export const discover = Effect.fn("service.discover")(function* (options: DiscoverOptions = {}) {
   const found = (yield* registered(options.file)).service
   if (found?.state !== "ready") return undefined
+  if (!ownedByThisBuild(found.info)) return undefined
   if (!found.compatible) return undefined
   if (!matchesVersion(found.version, options)) return undefined
   return found.endpoint
@@ -38,6 +39,7 @@ export const incumbent = Effect.fn("service.incumbent")(function* (
   if (info === undefined) return undefined
   const found = (yield* Effect.promise(() => probeResult({ ...info, url: options.url }))).service
   if (!found?.compatible) return undefined
+  if (!ownedByThisBuild(found.info)) return undefined
   if (!matchesVersion(found.version, options)) return undefined
   return { endpoint: found.endpoint, state: found.state }
 })
@@ -183,6 +185,18 @@ const stopped = Effect.fnUntraced(function* (pid: number) {
 const terminate = Effect.fnUntraced(function* (info: Info, options: { readonly file?: string }, timing: EnsureTiming) {
   const current = yield* read(options.file)
   if (current === undefined || !same(current, info)) return
+  // Never signal a PID that is not proven to be this registered owner. A stale
+  // registration can outlive its process, and the PID may then belong to an
+  // unrelated same-user process. Callers treat this as a failed stop so a
+  // removal cannot proceed against a service that is still running.
+  const verified = (yield* Effect.promise(() => probeResult(info, timing.requestTimeout))).service
+  if (!verified)
+    return yield* Effect.fail(
+      new Error(
+        `refusing to stop service pid ${info.pid}: the registered endpoint did not confirm it is the owner. ` +
+          `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
+      ),
+    )
   yield* signal(info.pid, "SIGTERM")
   const done = yield* stopped(info.pid).pipe(Effect.retry(poll(timing)), Effect.option)
   // The registration can disappear or change hands before this process exits. Only the PID we

@@ -45,8 +45,11 @@ jobs:
         run: |
           set -euo pipefail
           REVISION=$(jq -r '.derivativeRevision // empty' "manifests/${VERSION}.json")
+          # A reviewed manifest must declare its revision; guessing one could
+          # reuse a tag that was built from different source.
           if ! printf '%s' "$REVISION" | grep -Eq '^[1-9][0-9]*$'; then
-            REVISION=1
+            echo "manifests/${VERSION}.json has no valid derivativeRevision" >&2
+            exit 1
           fi
           echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
 
@@ -77,9 +80,13 @@ jobs:
           # A failed build must be retryable; a successful candidate build for
           # this exact upstream version and revision must not run every day.
           NAME="build ${VERSION}-unguarded.${REVISION}"
+          SHA=$(git rev-parse HEAD)
+          # Only a successful build of this exact derivative commit suppresses a
+          # rebuild; another commit's success says nothing about this source.
           RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build-release.yml --limit 100 \
-            --json status,conclusion,displayTitle \
-            | jq --arg name "$NAME" '[.[] | select(.displayTitle == $name and .conclusion == "success")] | length')
+            --json status,conclusion,displayTitle,headSha \
+            | jq --arg name "$NAME" --arg sha "$SHA" \
+                '[.[] | select(.displayTitle == $name and .headSha == $sha and .conclusion == "success")] | length')
           echo "successful=$RUNS" >> "$GITHUB_OUTPUT"
 
       - name: Trigger build

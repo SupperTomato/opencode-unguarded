@@ -13,7 +13,7 @@
 
 import fs from "node:fs"
 import path from "node:path"
-import { apply, loadManifest, repoRoot, sha256, verify } from "./apply"
+import { apply, loadManifest, repoRoot, sha256, verify, verifyUpstreamIdentity } from "./apply"
 import { verifyTelemetryBinary, verifyTelemetrySource } from "./telemetry"
 import { verifyLifecycle } from "./lifecycle"
 
@@ -78,13 +78,16 @@ if (upstream) {
   check("B1-pristine-identity", () => {
     if (!fs.existsSync(path.join(upstream, "packages/cli/package.json")))
       throw new Error(`not an upstream checkout: ${upstream}`)
+    // The pinned source must be the real commit, not just bytes that happen to
+    // match the declared targets.
+    verifyUpstreamIdentity(upstream, manifest)
     const mismatched = manifest.files.filter((entry) => {
       if (entry.pristine === null) return false
       const file = path.join(upstream, entry.file)
       return !fs.existsSync(file) || sha256(fs.readFileSync(file)) !== entry.pristine
     })
     if (mismatched.length > 0) throw new Error(`pristine mismatch: ${mismatched.map((entry) => entry.file).join(", ")}`)
-    return `${manifest.files.length} pristine fingerprints match`
+    return `${manifest.files.length} pristine fingerprints match at ${manifest.upstream.commit.slice(0, 8)}`
   })
 
   check("B2-apply-from-pristine", () => {

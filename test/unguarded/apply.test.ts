@@ -200,6 +200,49 @@ describe("planning and application", () => {
     expect(existing.map((entry) => read(root, entry.file))).toEqual(before)
   })
 
+  test("a late rejection performs no filesystem mutation", () => {
+    const root = upstreamFixture()
+    const added = manifest.files.find((entry) => entry.pristine === null)!
+    // Remove the added file's directory so a preflight write would be visible.
+    fs.rmSync(path.join(root, path.dirname(added.file)), { recursive: true, force: true })
+    const protectedFile = manifest.protected[0]!
+    write(root, protectedFile.file, `${read(root, protectedFile.file)}\n// changed\n`)
+    const before = manifest.files
+      .filter((entry) => entry.pristine !== null)
+      .map((entry) => read(root, entry.file))
+    expect(() => plan(root, manifest, transforms(manifest))).toThrow(/protected file/)
+    expect(fs.existsSync(path.join(root, path.dirname(added.file)))).toBe(false)
+    expect(
+      manifest.files.filter((entry) => entry.pristine !== null).map((entry) => read(root, entry.file)),
+    ).toEqual(before)
+  })
+
+  test("a worktree checkout is verified through its real Git metadata", () => {
+    const root = upstreamFixture()
+    // Simulate a `.git` file pointing at unrelated metadata; identity must fail
+    // closed instead of silently accepting the source.
+    fs.rmSync(path.join(root, ".git"), { recursive: true, force: true })
+    fs.writeFileSync(path.join(root, ".git"), "gitdir: /nonexistent/git-metadata\n")
+    expect(() => verifyUpstreamIdentity(root, manifest)).toThrow(/HEAD could not be read|does not match/)
+  })
+
+  test("a synthesized HEAD without the commit object is rejected", () => {
+    const root = upstreamFixture()
+    const entry = manifest.files.find((item) => item.pristine !== null)!
+    write(root, entry.file, "unrelated source\n")
+    write(root, ".git/HEAD", `${"b".repeat(40)}\n`)
+    expect(() => verifyUpstreamIdentity(root, manifest)).toThrow(/neither the pinned upstream commit|not a descendant/)
+  })
+
+  test("a directory without Git metadata is accepted only for pinned bytes", () => {
+    const root = upstreamFixture()
+    fs.rmSync(path.join(root, ".git"), { recursive: true, force: true })
+    expect(verifyUpstreamIdentity(root, manifest)).toBe(true)
+    const entry = manifest.files.find((item) => item.pristine !== null)!
+    write(root, entry.file, "unrelated source\n")
+    expect(() => verifyUpstreamIdentity(root, manifest)).toThrow(/does not match the pinned upstream/)
+  })
+
   test("a protected file change is rejected", () => {
     const root = upstreamFixture()
     apply(root, manifest)

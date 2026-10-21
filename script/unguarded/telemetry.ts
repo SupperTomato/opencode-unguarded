@@ -11,7 +11,7 @@
 
 import fs from "node:fs"
 import path from "node:path"
-import { cliRoot, exists, loadManifest, read, type Manifest } from "./lib/patch"
+import { cliRoot, exists, loadManifest, positional, read, type Manifest } from "./lib/patch"
 
 export type Change = { file: string; reason: string }
 
@@ -113,16 +113,17 @@ export function stripTelemetry(_root: string): Change[] {
 
 if (import.meta.main) {
   const args = process.argv.slice(2)
-  const positional = args.filter((arg, index) => !arg.startsWith("--") && index !== args.indexOf("--binary") + 1)
   const binaryIndex = args.indexOf("--binary")
   const binary = binaryIndex === -1 ? undefined : args[binaryIndex + 1]
-  const version = positional.find((arg) => /^\d+\.\d+\.\d+$/.test(arg))
+  const positionalArgs = positional(args, ["--root", "--binary"])
+  const version = positionalArgs.find((arg) => /^\d+\.\d+\.\d+$/.test(arg))
   try {
     if (!args.includes("--check")) {
       console.error("telemetry patches are applied by script/unguarded/apply.ts; re-run with --check to verify")
       process.exit(2)
     }
-    const root = binary === undefined ? cliRoot(args) : process.cwd()
+    const rootIndex = positionalArgs.findIndex((arg) => !/^\d+\.\d+\.\d+$/.test(arg))
+    const root = rootIndex === -1 ? cliRoot(args) : path.resolve(positionalArgs[rootIndex]!)
     const errors = binary === undefined ? verifyTelemetrySource(root) : verifyTelemetryBinary(binary)
     if (binary === undefined && version !== undefined) {
       const manifest = loadManifest(version)

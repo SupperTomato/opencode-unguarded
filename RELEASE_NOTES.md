@@ -1,4 +1,4 @@
-# OpenCode Unguarded v2.1.2 (revision 3)
+# OpenCode Unguarded v2.1.2 (revision 4)
 
 Derivative of OpenCode with built-in model-prompt guardrails removed and outbound
 telemetry integrations disabled at build time.
@@ -27,6 +27,15 @@ telemetry integrations disabled at build time.
 
 ## Lifecycle changes
 
+- Uninstall rejects an installation root that contains the profile, canonicalizes
+  paths, and stops only a verified owned service.
+- Installer requires a checksum entry for the exact archive, verifies recorded
+  hashes, preflights the command link, and rolls back a failed activation.
+- Live service discovery requires the derivative marker and refuses to signal a
+  PID the registered endpoint does not confirm.
+- Direct binary execution uses the candidate profile instead of stock storage.
+- `OPENCODE_DB` overrides, including `:memory:`, are honored inside the profile.
+
 - Every upstream update route is refused at the shared updater boundary,
   including `--method`, startup checks, and TUI updates.
 - The derivative identity is compiled into the binary and cannot be changed by
@@ -34,7 +43,7 @@ telemetry integrations disabled at build time.
 - Service registrations carry a derivative marker; a stock registration with the
   same version is not adopted.
 - `uninstall` removes only the derivative installation and keeps profile data.
-- `--version` reports `v2.1.2-unguarded.3`.
+- `--version` reports `v2.1.2-unguarded.4`.
 
 ## Preserved
 

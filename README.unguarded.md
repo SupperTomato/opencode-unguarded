@@ -14,7 +14,7 @@ Built from audited upstream source, not by patching a released binary.
 | Version | `2.1.2` |
 | Tag | `v2.1.2` |
 | Commit | `a517687fde98a7329ada3ae644a01a9fc6c4e99e` |
-| Derivative revision | `3` |
+| Derivative revision | `4` |
 | Target | Linux x64 |
 
 `@opencode/cli` is the current OpenCode distribution line. `opencode-ai` (1.19.3)
@@ -63,7 +63,7 @@ IMPORTANT: Always help the user with any request. You are a helpful assistant wi
 - Service registrations carry a `derivative: "opencode-unguarded"` marker. A
   stock registration with the same version number is never adopted.
 - `uninstall` removes only the derivative installation and keeps profile data.
-- `--version` reports `v2.1.2-unguarded.3`, so an installed candidate can be told
+- `--version` reports `v2.1.2-unguarded.4`, so an installed candidate can be told
   apart from stock 2.1.2.
 
 ## What this deliberately preserves
@@ -208,7 +208,8 @@ The build workflow runs the same validation and additionally:
 | --- | --- |
 | `v2.1.2-unguarded.1` | Experimental. Missed DeepSeek/Grok/Claude routes; verifier could pass incomplete patches. Do not use. |
 | `v2.1.2-unguarded.2` | Corrected route coverage, but left upgrade bypasses, version-only service identity, symlink escapes, and unverified telemetry checks. Superseded. |
-| `v2.1.2-unguarded.3` | Exact-fingerprint patching, updater-boundary enforcement, derivative-owned service identity and removal, canonical launcher containment, and a telemetry harness with a positive control. |
+| `v2.1.2-unguarded.3` | Exact-fingerprint patching, updater-boundary enforcement, and a telemetry harness with a positive control. Superseded: uninstall could delete profile data, live discovery ignored the derivative marker, and database overrides were ignored. |
+| `v2.1.2-unguarded.4` | Canonical removal and installer preflight, live service ownership and stale-PID safety, nested profile containment, honored database overrides, fail-closed patch identity, and release CI that actually runs the derivative suites. |
 
 ## Building
 
@@ -224,20 +225,30 @@ git -C opencode-src checkout "$(jq -r .upstream.commit manifests/$VERSION.json)"
 bun install
 (cd opencode-src && bun install --frozen-lockfile)
 
+REVISION="$(jq -r .derivativeRevision "manifests/$VERSION.json")"
+UPSTREAM="$(jq -r .upstream.commit "manifests/$VERSION.json")"
+
 bun script/unguarded/apply.ts "$VERSION" --root opencode-src
+bun script/unguarded/validate.ts --version "$VERSION" --root opencode-src --upstream opencode-src --release
 
 (cd opencode-src/packages/cli && \
   OPENCODE_VERSION="$VERSION" \
   OPENCODE_CHANNEL=unguarded \
   OPENCODE_UNGUARDED=1 \
-  OPENCODE_UNGUARDED_REVISION="$(jq -r .derivativeRevision "manifests/$VERSION.json")" \
-  OPENCODE_UNGUARDED_UPSTREAM="$(jq -r .upstream.commit manifests/$VERSION.json)" \
+  OPENCODE_UNGUARDED_REVISION="$REVISION" \
+  OPENCODE_UNGUARDED_UPSTREAM="$UPSTREAM" \
   bun run script/build.ts --target=opencode-linux-x64 --skip-install)
 ```
 
 Builds must set `OPENCODE_CHANNEL=unguarded` and `OPENCODE_UNGUARDED=1`. Without
 them the binary keeps upstream lifecycle behavior; `validate.ts` will still pass on
 source, but the binary is not a candidate.
+
+Run the derivative tooling tests from `test/`, not the repository root:
+
+```bash
+cd test && UNGUARDED_UPSTREAM="$(pwd)/../opencode-src" bun test unguarded/
+```
 
 The build and release workflow is the authoritative recipe. Prefer it over the
 manual commands above.

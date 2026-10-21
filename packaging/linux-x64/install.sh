@@ -3,8 +3,9 @@
 #
 # Usage: install.sh [--prefix DIR] [--no-link] [--archive FILE]
 #
-# The archive is verified against its checksum, staged beside the target, and
-# activated by rename. The previous installation is kept as a rollback copy.
+# Verification and link preflight finish before the previous installation is
+# touched. Activation is a rename; a failed activation restores the previous
+# installation.
 set -euo pipefail
 
 die() {
@@ -38,6 +39,29 @@ case "$prefix" in
   "$HOME/.local/bin") die "use the default prefix; --prefix must be an installation directory, not a bin directory" ;;
 esac
 
+canonical_allow_missing() {
+  local target="$1" suffix=""
+  while [ ! -e "$target" ]; do
+    suffix="/$(basename "$target")$suffix"
+    target="$(dirname "$target")"
+  done
+  printf '%s%s' "$(cd -P "$target" && pwd)" "$suffix"
+}
+
+prefix_real="$(canonical_allow_missing "$prefix")"
+case "$prefix_real" in
+  "$HOME/.local/share/opencode"|"$HOME/.local/share/opencode/"*)
+    die "refusing an installation inside stock OpenCode data: $prefix_real" ;;
+  /) die "refusing the filesystem root as an installation" ;;
+esac
+# An installation that contains the profile cannot be removed without deleting
+# the profile, so refuse it up front instead of discovering that at uninstall.
+profile_real="$(canonical_allow_missing "${OPENCODE_UNGUARDED_PROFILE:-${XDG_DATA_HOME:-$HOME/.local/share}/opencode-unguarded/profile}")"
+case "$profile_real" in
+  "$prefix_real"|"$prefix_real/"*)
+    die "refusing an installation root containing the application profile: $profile_real" ;;
+esac
+
 work="$(mktemp -d)"
 staging=""
 cleanup() {
@@ -51,13 +75,17 @@ if [ -z "$archive" ]; then
   [ -f "$archive" ] || archive="$script_dir/opencode-unguarded-linux-x64.tar.gz"
 fi
 [ -f "$archive" ] || die "archive not found: $archive"
+archive_dir="$(cd -P "$(dirname "$archive")" && pwd)"
+archive="$(cd -P "$archive_dir" && pwd)/$(basename "$archive")"
 
-checksums="$(dirname "$archive")/checksums.sha256"
-if [ -f "$checksums" ]; then
-  (cd "$(dirname "$archive")" && sha256sum -c checksums.sha256 >/dev/null) || die "archive checksum failed"
-else
-  echo "install.sh: warning: no checksums.sha256 beside the archive; skipping checksum verification" >&2
-fi
+# The checksum file is mandatory, and it must cover this exact archive by name.
+checksums="$archive_dir/checksums.sha256"
+[ -f "$checksums" ] || die "missing $checksums; refusing to install an unverified archive"
+archive_name="$(basename "$archive")"
+expected="$(awk -v name="$archive_name" '{ file=$2; sub(/^\*/, "", file); n=split(file, parts, "/"); if (parts[n] == name) { print $1; exit } }' "$checksums")"
+[ -n "$expected" ] || die "$checksums has no entry for $archive_name; refusing to install an unverified archive"
+actual="$(sha256sum "$archive" | cut -d' ' -f1)"
+[ "$actual" = "$expected" ] || die "archive checksum failed"
 
 # Reject escaping archive members before extraction.
 if tar tzf "$archive" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
@@ -73,59 +101,89 @@ source="$work/extract/opencode-unguarded"
 [ -x "$source/libexec/opencode" ] || die "archive is missing libexec/opencode"
 [ -x "$source/bin/opencode-unguarded" ] || die "archive is missing bin/opencode-unguarded"
 
-# Activate only a binary whose embedded revision matches its metadata.
+# The archive must match the identity it records before anything runs.
 info="$source/BUILD-INFO.json"
 [ -f "$info" ] || die "archive is missing BUILD-INFO.json"
-reported="$("$source/bin/opencode-unguarded" --version)"
-recorded="v$(jq -r .version "$info")-unguarded.$(jq -r .derivativeRevision "$info")"
+version="$(jq -r .version "$info")"
+revision="$(jq -r .derivativeRevision "$info")"
+[ "$(jq -r .derivative "$info")" = "opencode-unguarded" ] || die "archive metadata is not opencode-unguarded"
+[ -n "$version" ] && [ "$version" != "null" ] || die "archive metadata has no version"
+[ -n "$revision" ] && [ "$revision" != "null" ] || die "archive metadata has no derivative revision"
+recorded_executable="$(jq -r .executableSha256 "$info")"
+recorded_launcher="$(jq -r .launcherSha256 "$info")"
+if [ -n "$recorded_executable" ] && [ "$recorded_executable" != "null" ]; then
+  test "$(sha256sum "$source/libexec/opencode" | cut -d' ' -f1)" = "$recorded_executable" ||
+    die "executable hash does not match BUILD-INFO.json"
+fi
+if [ -n "$recorded_launcher" ] && [ "$recorded_launcher" != "null" ]; then
+  test "$(sha256sum "$source/bin/opencode-unguarded" | cut -d' ' -f1)" = "$recorded_launcher" ||
+    die "launcher hash does not match BUILD-INFO.json"
+fi
+reported="$(OPENCODE_UNGUARDED_PROFILE="$work/profile" "$source/bin/opencode-unguarded" --version)"
 case "$reported" in
-  *"$recorded"*) ;;
-  *) die "embedded version '$reported' does not match metadata '$recorded'" ;;
+  *"v${version}-unguarded.${revision}"*) ;;
+  *) die "embedded version '$reported' does not match metadata 'v${version}-unguarded.${revision}'" ;;
 esac
 
-mkdir -p "$(dirname "$prefix")"
-staging="$(dirname "$prefix")/.opencode-unguarded.stage.$$"
+# Preflight the command link before activating anything.
+bindir="$HOME/.local/bin"
+target="$prefix_real/bin/opencode-unguarded"
+current="$bindir/opencode-unguarded"
+if [ "$link" -eq 1 ] && [ -L "$current" ]; then
+  existing="$(readlink "$current")"
+  case "$existing" in
+    "$prefix"/*|"$prefix_real"/*) ;;
+    *) die "$current points at $existing; refusing to replace a link outside this installation" ;;
+  esac
+fi
+if [ "$link" -eq 1 ] && [ -e "$current" ] && [ ! -L "$current" ]; then
+  die "$current exists and is not a symlink; refusing to replace it"
+fi
+
+previous=""
+mkdir -p "$(dirname "$prefix_real")"
+staging="$(dirname "$prefix_real")/.opencode-unguarded.stage.$$"
 rm -rf "$staging"
 mkdir -p "$staging"
 cp -a "$source/." "$staging/"
 
 previous=""
-if [ -e "$prefix" ]; then
-  previous="$(dirname "$prefix")/.opencode-unguarded.previous.$$"
+if [ -e "$prefix_real" ]; then
+  previous="$(dirname "$prefix_real")/.opencode-unguarded.previous.$$"
   rm -rf "$previous"
-  mv "$prefix" "$previous"
+  mv "$prefix_real" "$previous"
 fi
 
-if ! mv "$staging" "$prefix"; then
-  [ -n "$previous" ] && mv "$previous" "$prefix" 2>/dev/null || true
+if ! mv "$staging" "$prefix_real"; then
+  if [ -n "$previous" ]; then mv "$previous" "$prefix_real" 2>/dev/null || true; fi
   die "failed to activate the installation; the previous installation was restored"
 fi
 staging=""
+
+# If anything after activation fails, put the previous installation back.
+rollback() {
+  rm -rf "$prefix_real" 2>/dev/null || true
+  if [ -n "$previous" ]; then mv "$previous" "$prefix_real" 2>/dev/null || true; fi
+}
+
+if ! OPENCODE_UNGUARDED_PROFILE="$work/profile" "$prefix_real/bin/opencode-unguarded" --version >/dev/null; then
+  rollback
+  die "the activated installation failed to run; the previous installation was restored"
+fi
+
+if [ "$link" -eq 1 ]; then
+  mkdir -p "$bindir"
+  if ! ln -sfn "$prefix_real/bin/opencode-unguarded" "$current"; then
+    rollback
+    die "failed to create $current; the previous installation was restored"
+  fi
+  echo "install.sh: linked $current -> $prefix_real/bin/opencode-unguarded"
+fi
 
 if [ -n "$previous" ]; then
   echo "install.sh: previous installation kept at $previous"
   echo "install.sh: remove it with: rm -rf '$previous'"
 fi
 
-if [ "$link" -eq 1 ]; then
-  bindir="$HOME/.local/bin"
-  mkdir -p "$bindir"
-  target="$prefix/bin/opencode-unguarded"
-  current="$bindir/opencode-unguarded"
-  if [ -e "$current" ] && [ ! -L "$current" ]; then
-    die "$current exists and is not a symlink; refusing to replace it"
-  fi
-  if [ -L "$current" ]; then
-    existing="$(readlink "$current")"
-    case "$existing" in
-      "$prefix"/*|*opencode-unguarded*) ;;
-      *) die "$current points at $existing; refusing to replace an unrelated command" ;;
-    esac
-  fi
-  ln -sfn "$target" "$current"
-  echo "install.sh: linked $current -> $target"
-fi
-
-"$prefix/bin/opencode-unguarded" --version
-echo "install.sh: installed to $prefix"
+echo "install.sh: installed $reported to $prefix_real"
 echo "install.sh: profile data lives at ${OPENCODE_UNGUARDED_PROFILE:-${XDG_DATA_HOME:-$HOME/.local/share}/opencode-unguarded/profile}"

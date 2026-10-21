@@ -41,17 +41,22 @@ done
 if [ -n "${OPENCODE_DB:-}" ] && [ "${OPENCODE_DB}" != ":memory:" ]; then
   case "${OPENCODE_DB}" in
     /*) die "refusing absolute OPENCODE_DB (${OPENCODE_DB}); it would escape this profile" ;;
+    *\\*) die "refusing OPENCODE_DB containing a backslash (${OPENCODE_DB})" ;;
   esac
   case "/${OPENCODE_DB}/" in
     */../*) die "refusing OPENCODE_DB with a '..' component (${OPENCODE_DB})" ;;
   esac
+  case "${OPENCODE_DB}" in
+    */*) die "refusing nested OPENCODE_DB (${OPENCODE_DB}); use a plain filename inside the profile" ;;
+  esac
 fi
 
 canonical_allow_missing() {
-  # Resolve an absolute path whose leaf may not exist yet. Every existing
-  # component is canonicalized, so a symlinked parent cannot redirect it.
+  # Resolve an absolute path whose leaf may not exist yet. Walk up until an
+  # existing *directory* is found, so an existing regular file (such as an
+  # initialised database) is not mistaken for a directory.
   local target="$1" suffix=""
-  while [ ! -e "$target" ]; do
+  while [ ! -d "$target" ]; do
     suffix="/$(basename "$target")$suffix"
     target="$(dirname "$target")"
   done
@@ -81,19 +86,32 @@ for name in data config cache state tmp; do
   chmod 700 "$directory" 2>/dev/null || true
 done
 
-# The database must stay inside the derived data directory. `debug paths db`,
-# Config, and databasePath all resolve it through this same directory.
-if [ -n "${OPENCODE_DB:-}" ] && [ "${OPENCODE_DB}" != ":memory:" ]; then
-  data_real="$profile_real/data/opencode"
-  case "$OPENCODE_DB" in
-    */*) die "refusing nested OPENCODE_DB (${OPENCODE_DB}); use a filename inside $data_real" ;;
-  esac
-  mkdir -p "$data_real"
-  [ ! -L "$data_real/$OPENCODE_DB" ] || die "refusing a symlinked OPENCODE_DB: $data_real/$OPENCODE_DB"
-  db_real="$(canonical_allow_missing "$data_real/$OPENCODE_DB")"
+# The runtime appends `opencode` below each XDG root. Those directories, not
+# just the roots, are what configuration, state, cache, and the database
+# actually use, so a symlink there would still escape the profile.
+for name in data config cache state tmp; do
+  appdir="$profile_real/$name/opencode"
+  if [ -L "$appdir" ]; then
+    die "refusing symlinked application directory: $name/opencode -> $(readlink "$appdir")"
+  fi
+  mkdir -p "$appdir"
+  resolved="$(cd -P "$appdir" && pwd)"
+  [ "$resolved" = "$appdir" ] || die "refusing escaped application directory: $name/opencode -> $resolved"
+  [ -O "$appdir" ] || die "application directory is not owned by the current user: $appdir"
+  chmod 700 "$appdir" 2>/dev/null || true
+done
+
+# The database must stay inside the profile data directory. This is checked for
+# the default filename too, because a symlinked default would silently redirect
+# SQLite writes outside the profile.
+data_real="$profile_real/data/opencode"
+database="${OPENCODE_DB:-opencode-unguarded.db}"
+if [ "$database" != ":memory:" ]; then
+  [ ! -L "$data_real/$database" ] || die "refusing a symlinked database: $data_real/$database"
+  db_real="$(canonical_allow_missing "$data_real/$database")"
   case "$db_real" in
     "$data_real"/*) ;;
-    *) die "refusing OPENCODE_DB outside the derivative data directory: $db_real" ;;
+    *) die "refusing a database outside the derivative data directory: $db_real" ;;
   esac
 fi
 
@@ -104,8 +122,11 @@ fi
 
 export OPENCODE_UNGUARDED_PROFILE="$profile_real"
 export OPENCODE_UNGUARDED_ROOT="$root"
-export OPENCODE_DB="${OPENCODE_DB:-}"
-[ -z "$OPENCODE_DB" ] && unset OPENCODE_DB
+if [ -n "${OPENCODE_DB:-}" ]; then
+  export OPENCODE_DB
+else
+  unset OPENCODE_DB
+fi
 export XDG_DATA_HOME="$profile_real/data"
 export XDG_CONFIG_HOME="$profile_real/config"
 export XDG_CACHE_HOME="$profile_real/cache"

@@ -96,7 +96,9 @@ describe("launcher profile containment", () => {
     const plain = run([], { OPENCODE_DB: "custom.db" })
     expect(plain.exitCode).toBe(0)
     expect(plain.recorded?.env.OPENCODE_DB).toBe("custom.db")
-    expect(run([], { OPENCODE_DB: ":memory:" }).exitCode).toBe(0)
+    const memory = run([], { OPENCODE_DB: ":memory:" })
+    expect(memory.exitCode).toBe(0)
+    expect(memory.recorded?.env.OPENCODE_DB).toBe(":memory:")
   })
 
   test("refuses a symlinked database inside the profile", () => {
@@ -107,7 +109,31 @@ describe("launcher profile containment", () => {
       fs.symlinkSync(path.join(_root, "outside.db"), path.join(data, "linked.db"))
     })
     expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain("symlinked OPENCODE_DB")
+    expect(result.stderr).toContain("symlinked database")
+  })
+
+  test("refuses a symlinked nested application directory", () => {
+    for (const name of ["data", "config", "cache", "state", "tmp"]) {
+      const result = run([], {}, (root, home) => {
+        const parent = path.join(home, ".local", "share", "opencode-unguarded/profile", name)
+        fs.mkdirSync(parent, { recursive: true })
+        fs.mkdirSync(path.join(root, "outside"), { recursive: true })
+        fs.symlinkSync(path.join(root, "outside"), path.join(parent, "opencode"))
+      })
+      expect({ name, exitCode: result.exitCode }).toEqual({ name, exitCode: 1 })
+      expect(result.stderr).toContain("symlinked application directory")
+    }
+  })
+
+  test("refuses a symlinked default database", () => {
+    const result = run([], {}, (root, home) => {
+      const data = path.join(home, ".local", "share", "opencode-unguarded/profile/data/opencode")
+      fs.mkdirSync(data, { recursive: true })
+      fs.writeFileSync(path.join(root, "outside.db"), "")
+      fs.symlinkSync(path.join(root, "outside.db"), path.join(data, "opencode-unguarded.db"))
+    })
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("symlinked database")
   })
 
   test("refuses symlinked profile storage", () => {

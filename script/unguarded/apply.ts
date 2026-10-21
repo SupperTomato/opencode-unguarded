@@ -13,6 +13,7 @@ import fs from "node:fs"
 import path from "node:path"
 import {
   applyRoot,
+  positional,
   assertRelativePath,
   cliRoot,
   commit,
@@ -88,8 +89,7 @@ export function apply(root: string, manifest: Manifest) {
 
 if (import.meta.main) {
   const args = process.argv.slice(2)
-  const rootIndex = args.indexOf("--root")
-  const version = args.find((arg, index) => !arg.startsWith("--") && index !== rootIndex + 1)
+  const version = positional(args, ["--root"])[0]
   if (!version) {
     console.error("usage: bun script/unguarded/apply.ts <upstream-version> [--root <dir>] [--check]")
     process.exit(2)

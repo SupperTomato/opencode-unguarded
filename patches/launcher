@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_self() {
+  local source="${BASH_SOURCE[0]}"
+  while [ -L "$source" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    [[ $source != /* ]] && source="$dir/$source"
+  done
+  cd -P "$(dirname "$source")" && pwd
+}
+
+die() {
+  echo "opencode-unguarded: $*" >&2
+  exit 1
+}
+
+here="$(resolve_self)"
+root="$(cd "$here/.." && pwd)"
+binary="$root/libexec/opencode"
+profile="${OPENCODE_UNGUARDED_PROFILE:-${XDG_DATA_HOME:-$HOME/.local/share}/opencode-unguarded/profile}"
+
+[ -x "$binary" ] || die "missing binary at $binary"
+
+# ---------------------------------------------------------------------------
+# Reject inherited settings before creating anything on disk.
+# ---------------------------------------------------------------------------
+case "$profile" in
+  /*) ;;
+  *) die "OPENCODE_UNGUARDED_PROFILE must be an absolute path (got: $profile)" ;;
+esac
+
+for name in OPENCODE_CONFIG_DIR OPENCODE_CONFIG OPENCODE_CONFIG_CONTENT OPENCODE_TEST_HOME; do
+  if [ -n "${!name:-}" ]; then
+    die "refusing inherited $name; it would escape this profile (unset it, or configure $profile/config/opencode)"
+  fi
+done
+
+if [ -n "${OPENCODE_DB:-}" ] && [ "${OPENCODE_DB}" != ":memory:" ]; then
+  case "${OPENCODE_DB}" in
+    /*) die "refusing absolute OPENCODE_DB (${OPENCODE_DB}); it would escape this profile" ;;
+    *\\*) die "refusing OPENCODE_DB containing a backslash (${OPENCODE_DB})" ;;
+  esac
+  case "/${OPENCODE_DB}/" in
+    */../*) die "refusing OPENCODE_DB with a '..' component (${OPENCODE_DB})" ;;
+  esac
+  case "${OPENCODE_DB}" in
+    */*) die "refusing nested OPENCODE_DB (${OPENCODE_DB}); use a plain filename inside the profile" ;;
+  esac
+fi
+
+canonical_allow_missing() {
+  # Resolve an absolute path whose leaf may not exist yet. Walk up until an
+  # existing *directory* is found, so an existing regular file (such as an
+  # initialised database) is not mistaken for a directory.
+  local target="$1" suffix=""
+  while [ ! -d "$target" ]; do
+    suffix="/$(basename "$target")$suffix"
+    target="$(dirname "$target")"
+  done
+  printf '%s%s' "$(cd -P "$target" && pwd)" "$suffix"
+}
+
+profile_real="$(canonical_allow_missing "$profile")"
+case "$profile_real" in
+  "$HOME/.local/share/opencode"|"$HOME/.local/share/opencode/"*)
+    die "refusing a profile inside the stock OpenCode data directory: $profile_real" ;;
+  "$HOME/.config/opencode"|"$HOME/.config/opencode/"*)
+    die "refusing a profile inside the stock OpenCode config directory: $profile_real" ;;
+  "$HOME/.cache/opencode"|"$HOME/.cache/opencode/"*)
+    die "refusing a profile inside the stock OpenCode cache directory: $profile_real" ;;
+  "$HOME/.local/state/opencode"|"$HOME/.local/state/opencode/"*)
+    die "refusing a profile inside the stock OpenCode state directory: $profile_real" ;;
+  /) die "refusing the filesystem root as a profile" ;;
+esac
+
+mkdir -p "$profile_real/data" "$profile_real/config" "$profile_real/cache" "$profile_real/state" "$profile_real/tmp"
+
+for name in data config cache state tmp; do
+  directory="$profile_real/$name"
+  resolved="$(cd -P "$directory" && pwd)"
+  [ "$resolved" = "$directory" ] || die "refusing symlinked profile storage: $name -> $resolved"
+  [ -O "$directory" ] || die "profile storage is not owned by the current user: $directory"
+  chmod 700 "$directory" 2>/dev/null || true
+done
+
+# The runtime appends `opencode` below each XDG root. Those directories, not
+# just the roots, are what configuration, state, cache, and the database
+# actually use, so a symlink there would still escape the profile.
+for name in data config cache state tmp; do
+  appdir="$profile_real/$name/opencode"
+  if [ -L "$appdir" ]; then
+    die "refusing symlinked application directory: $name/opencode -> $(readlink "$appdir")"
+  fi
+  mkdir -p "$appdir"
+  resolved="$(cd -P "$appdir" && pwd)"
+  [ "$resolved" = "$appdir" ] || die "refusing escaped application directory: $name/opencode -> $resolved"
+  [ -O "$appdir" ] || die "application directory is not owned by the current user: $appdir"
+  chmod 700 "$appdir" 2>/dev/null || true
+done
+
+# The database must stay inside the profile data directory. This is checked for
+# the default filename too, because a symlinked default would silently redirect
+# SQLite writes outside the profile.
+data_real="$profile_real/data/opencode"
+database="${OPENCODE_DB:-opencode-unguarded.db}"
+if [ "$database" != ":memory:" ]; then
+  [ ! -L "$data_real/$database" ] || die "refusing a symlinked database: $data_real/$database"
+  db_real="$(canonical_allow_missing "$data_real/$database")"
+  case "$db_real" in
+    "$data_real"/*) ;;
+    *) die "refusing a database outside the derivative data directory: $db_real" ;;
+  esac
+fi
+
+# An inherited server URL would silently attach the candidate to stock OpenCode.
+if [ -n "${OPENCODE_SERVER_URL:-}" ] || [ -n "${OPENCODE_SERVER:-}" ]; then
+  die "refusing inherited server attachment; pass --server explicitly"
+fi
+
+export OPENCODE_UNGUARDED_PROFILE="$profile_real"
+export OPENCODE_UNGUARDED_ROOT="$root"
+if [ -n "${OPENCODE_DB:-}" ]; then
+  export OPENCODE_DB
+else
+  unset OPENCODE_DB
+fi
+export XDG_DATA_HOME="$profile_real/data"
+export XDG_CONFIG_HOME="$profile_real/config"
+export XDG_CACHE_HOME="$profile_real/cache"
+export XDG_STATE_HOME="$profile_real/state"
+export TMPDIR="$profile_real/tmp"
+
+exec "$binary" "$@"

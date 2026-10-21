@@ -73,17 +73,28 @@ exercise() {
     "NO_COLOR=1"
   )
 
-  "$binary" --version >/dev/null 2>&1 || true
-  env "${env[@]}" "$binary" debug paths >/dev/null 2>&1 || true
-  # A real server start and a short session exercise reach more exporter paths
-  # than a version probe. Failures here are reported, not silently ignored.
+  # Each exercise must succeed. A crashed candidate would otherwise emit no
+  # telemetry and look identical to a correctly patched build.
+  env "${env[@]}" "$binary" --version >"$work/$name.version.log" 2>&1 ||
+    { echo "$name failed --version" >&2; cat "$work/$name.version.log" >&2; exit 1; }
+  env "${env[@]}" "$binary" debug paths >"$work/$name.paths.log" 2>&1 ||
+    { echo "$name failed debug paths" >&2; cat "$work/$name.paths.log" >&2; exit 1; }
+
+  # Start a real server and wait until it reports its listening address.
   env "${env[@]}" "$binary" serve --port 0 >"$work/$name.serve.log" 2>&1 &
   local server=$!
   children+=("$server")
-  for _ in $(seq 1 100); do
-    if grep -q "http://" "$work/$name.serve.log" 2>/dev/null; then break; fi
+  local ready=0
+  for _ in $(seq 1 200); do
+    if grep -q "http://" "$work/$name.serve.log" 2>/dev/null; then ready=1; break; fi
+    if ! kill -0 "$server" 2>/dev/null; then break; fi
     sleep 0.1
   done
+  if [ "$ready" -ne 1 ]; then
+    echo "$name server did not become ready" >&2
+    cat "$work/$name.serve.log" >&2
+    exit 1
+  fi
   sleep 3
   kill "$server" 2>/dev/null || true
   wait "$server" 2>/dev/null || true

@@ -4,6 +4,18 @@ import type { DiscoverOptions, Endpoint, Info } from "./service.js"
 import { defaultEnsureTiming } from "./service-timing.js"
 import { matchesVersion } from "./service-version.js"
 
+// opencode-unguarded: compiled in by the derivative build. When set, a service
+// registration and its live owner must both carry the derivative marker.
+declare const OPENCODE_UNGUARDED: boolean | undefined
+const DERIVATIVE = typeof OPENCODE_UNGUARDED === "boolean" && OPENCODE_UNGUARDED
+const DERIVATIVE_MARKER = "opencode-unguarded"
+
+/** Whether a registration belongs to this build's distribution. */
+export function ownedByThisBuild(info: { readonly derivative?: string }) {
+  if (!DERIVATIVE) return true
+  return info.derivative === DERIVATIVE_MARKER
+}
+
 // Shared by the Effect and Promise clients. Keep this module free of Effect so the
 // Promise client never loads the Effect runtime.
 
@@ -20,6 +32,11 @@ export type LocalService = {
  * it starts, replace it because its version does not meet the requirement, or fail.
  */
 export function decide(service: LocalService, options: DiscoverOptions) {
+  // A foreign build never satisfies discovery, even at the same version.
+  if (!ownedByThisBuild(service.info))
+    return fail(
+      "The registered background service belongs to a different OpenCode distribution. Stop it, then start this build.",
+    )
   if (!matchesVersion(service.version, options))
     return { _tag: "replace", pty: service.state === "ready" ? "handoff" : "clear" } as const
   if (!service.compatible)
@@ -42,7 +59,13 @@ export function fallback() {
 
 /** Whether two registrations describe the same service instance. */
 export function same(left: Info, right: Info) {
-  return left.id === right.id && left.version === right.version && left.url === right.url && left.pid === right.pid
+  return (
+    left.id === right.id &&
+    left.version === right.version &&
+    left.derivative === right.derivative &&
+    left.url === right.url &&
+    left.pid === right.pid
+  )
 }
 
 /** Ask a registered owner for its health and classify the answer. */

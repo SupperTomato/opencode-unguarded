@@ -317,9 +317,11 @@ export function loadManifest(version: string): Manifest {
 /**
  * Verify the checkout is the pinned upstream revision.
  *
- * Git metadata is authoritative when present. A source archive without it is
- * only accepted when every declared pristine fingerprint matches, which pins
- * the exact reviewed bytes.
+ * Git metadata is authoritative. A checkout with readable `.git` metadata must
+ * either be exactly the pinned commit or a derivative tree that still descends
+ * from it and whose declared files are all final. A source archive without Git
+ * metadata is accepted only when every declared file is exactly pristine or
+ * exactly final, which pins the reviewed bytes.
  */
 export function verifyUpstreamIdentity(root: string, manifest: Manifest) {
   const pkgFile = resolveTarget(root, "packages/cli/package.json")
@@ -333,12 +335,23 @@ export function verifyUpstreamIdentity(root: string, manifest: Manifest) {
         `refusing to patch an unsupported source`,
     )
 
-  const head = gitHead(root)
-  if (head === undefined) return true
-  if (head === manifest.upstream.commit) return true
-  // A derivative checkout records its own commits on top of the pin. Accept it
-  // only when every declared target is already the reviewed final content,
-  // which cannot be true of an unrelated or partially patched tree.
+  const metadata = gitMetadata(root)
+  if (metadata === undefined) {
+    // No Git metadata: the declared bytes must pin the source exactly.
+    for (const entry of manifest.files) {
+      if (entry.pristine === null) continue
+      const digest = sha256(read(root, entry.file))
+      if (digest !== entry.pristine && digest !== entry.final)
+        fail(`${entry.file}: source does not match the pinned upstream or reviewed output; refusing to patch`)
+    }
+    return true
+  }
+
+  if (metadata.head === undefined)
+    fail(`checkout has Git metadata but its HEAD could not be read; refusing to patch an unverified source`)
+
+  if (metadata.head === manifest.upstream.commit) return true
+
   const final = manifest.files.every((entry) => {
     try {
       return sha256(read(root, entry.file)) === entry.final
@@ -346,31 +359,70 @@ export function verifyUpstreamIdentity(root: string, manifest: Manifest) {
       return false
     }
   })
-  if (final) return true
-  fail(
-    `checkout HEAD ${head} is neither the pinned upstream commit ${manifest.upstream.commit} ` +
-      `nor a fully patched derivative tree; refusing to patch an unsupported source`,
-  )
+  if (!final)
+    fail(
+      `checkout HEAD ${metadata.head} is neither the pinned upstream commit ${manifest.upstream.commit} ` +
+        `nor a fully patched derivative tree; refusing to patch an unsupported source`,
+    )
+  if (!isAncestor(metadata.gitDir, manifest.upstream.commit, metadata.head))
+    fail(
+      `checkout HEAD ${metadata.head} is not a descendant of the pinned upstream commit ` +
+        `${manifest.upstream.commit}; refusing to patch an unrelated source`,
+    )
+  return true
 }
 
-function gitHead(root: string) {
-  if (!fs.existsSync(path.join(root, ".git"))) return undefined
+type GitMetadata = { readonly gitDir: string; readonly head: string | undefined }
+
+/** Read Git metadata, following a worktree `.git` file. */
+export function gitMetadata(root: string): GitMetadata | undefined {
+  const dotGit = path.join(root, ".git")
+  if (!fs.existsSync(dotGit)) return undefined
+
+  let gitDir = dotGit
+  let headFile = path.join(dotGit, "HEAD")
+  let commonDir = gitDir
+  if (fs.statSync(dotGit).isFile()) {
+    const pointer = fs.readFileSync(dotGit, "utf8").trim()
+    if (!pointer.startsWith("gitdir: ")) return { gitDir, head: undefined }
+    gitDir = path.resolve(root, pointer.slice("gitdir: ".length))
+    headFile = path.join(gitDir, "HEAD")
+    const common = path.join(gitDir, "commondir")
+    commonDir = fs.existsSync(common) ? path.resolve(gitDir, fs.readFileSync(common, "utf8").trim()) : gitDir
+  }
+
+  const head = readHead(headFile, commonDir)
+  return { gitDir: commonDir, head }
+}
+
+function readHead(headFile: string, commonDir: string) {
   try {
-    const head = fs.readFileSync(path.join(root, ".git", "HEAD"), "utf8").trim()
+    const head = fs.readFileSync(headFile, "utf8").trim()
     if (!head.startsWith("ref: ")) return head
     const ref = head.slice("ref: ".length)
-    const loose = path.join(root, ".git", ref)
+    const loose = path.join(commonDir, ref)
     if (fs.existsSync(loose)) return fs.readFileSync(loose, "utf8").trim()
-    const packed = path.join(root, ".git", "packed-refs")
+    const packed = path.join(commonDir, "packed-refs")
     if (!fs.existsSync(packed)) return undefined
     for (const line of fs.readFileSync(packed, "utf8").split("\n")) {
       const [sha, name] = line.trim().split(" ")
       if (name === ref && sha !== undefined) return sha
     }
+    return undefined
   } catch {
     return undefined
   }
-  return undefined
+}
+
+function isAncestor(gitDir: string, ancestor: string, descendant: string) {
+  if (typeof Bun === "undefined") return false
+  const result = Bun.spawnSync(
+    ["git", `--git-dir=${gitDir}`, "merge-base", "--is-ancestor", ancestor, descendant],
+    { stdout: "ignore", stderr: "ignore" },
+  )
+  // Exit 0 is a proven ancestor; any other result (including a missing object)
+  // must not be treated as proof.
+  return result.exitCode === 0
 }
 
 /**
@@ -406,8 +458,6 @@ export function plan(
       const added = transform("")
       if (sha256(added) !== entry.final)
         fail(`${entry.file}: reviewed output does not match the manifest final digest`)
-      const parent = path.dirname(target)
-      if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true })
       states.push("pristine")
       planned.push({ file: entry.file, next: added, change: { file: entry.file, reason: entry.reason } })
       continue
@@ -458,6 +508,11 @@ export function commit(root: string, planned: ReadonlyArray<Planned>) {
   const changes: Change[] = []
   for (const item of planned) {
     if (!item.change) continue
+    const full = resolveTarget(root, item.file)
+    const parent = path.dirname(full)
+    // Directories are created only here, after every target has validated, so
+    // a rejected plan never leaves filesystem changes behind.
+    if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true })
     write(root, item.file, item.next)
     changes.push(item.change)
   }
@@ -498,4 +553,10 @@ export function applyRoot(root: string, manifest: Manifest, transforms: Readonly
 export function cliRoot(args: string[]) {
   const index = args.indexOf("--root")
   return index === -1 ? process.cwd() : path.resolve(args[index + 1] ?? ".")
+}
+
+/** Values that are not flags and are not the argument of a valued flag. */
+export function positional(args: string[], valued: string[]) {
+  const indices = new Set(valued.map((flag) => args.indexOf(flag) + 1).filter((index) => index > 0))
+  return args.filter((arg, index) => !arg.startsWith("--") && !indices.has(index))
 }

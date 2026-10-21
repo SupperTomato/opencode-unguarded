@@ -82,12 +82,20 @@ describe("lifecycle verification", () => {
     expect(verifyServiceOwnership(root).join("\n")).toMatch(/stock service\.json file is still a migration candidate/)
   })
 
-  test("restoring the stock database filename is detected", () => {
+  test("restoring the stock database selection is detected", () => {
     const root = fixture()
     rewrite(root, "packages/cli/src/database-path.ts", (content) =>
-      content.replace('if (UNGUARDED) return path.resolve(data, "opencode-unguarded.db")', ""),
+      content.replace("if (UNGUARDED) return derivativeDatabase(data)", ""),
     )
     expect(verifyServiceOwnership(root).join("\n")).toMatch(/derivative database is not selected/)
+  })
+
+  test("dropping the :memory: override is detected", () => {
+    const root = fixture()
+    rewrite(root, "packages/cli/src/database-path.ts", (content) =>
+      content.replace('if (override === ":memory:") return override', ""),
+    )
+    expect(verifyServiceOwnership(root).join("\n")).toMatch(/:memory: override is not honored/)
   })
 
   test("removing the derivative removal branch is detected", () => {

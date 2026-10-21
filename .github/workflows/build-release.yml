@@ -141,6 +141,7 @@ jobs:
         run: |
           bun run --cwd packages/util typecheck
           bun run --cwd packages/core typecheck
+          bun run --cwd packages/client typecheck
           bun run --cwd packages/cli typecheck
           bun run --cwd packages/app typecheck
           bun run --cwd packages/desktop typecheck
@@ -150,19 +151,45 @@ jobs:
           UNGUARDED_SOURCE_ROOT: ${{ github.workspace }}/opencode-src
           UNGUARDED_DERIVATIVE_ROOT: ${{ github.workspace }}
           UNGUARDED_UPSTREAM: ${{ github.workspace }}/.check/pristine
-        run: bun test ./test/unguarded/
+        working-directory: ${{ github.workspace }}/test
+        run: bun test unguarded/
+
+      - name: Stage derivative suites into the release source
+        env:
+          DERIVATIVE_ROOT: ${{ github.workspace }}
+        run: |
+          # These behavioral suites and fixtures are derivative-only files. The
+          # manifest applies to upstream source, so copy them explicitly and
+          # prove they exist before asking bun to run them.
+          mkdir -p opencode-src/packages/cli/test/fixture opencode-src/packages/client/test opencode-src/packages/util/test
+          for file in \
+            packages/cli/test/unguarded-updater.test.ts \
+            packages/cli/test/unguarded-service.test.ts \
+            packages/cli/test/unguarded-database.test.ts \
+            packages/cli/test/fixture/unguarded-updater.ts \
+            packages/cli/test/fixture/unguarded-service.ts \
+            packages/client/test/unguarded-ownership.test.ts \
+            packages/util/test/unguarded-roots.test.ts; do
+            cp "$DERIVATIVE_ROOT/$file" "opencode-src/$file"
+            test -s "opencode-src/$file" || { echo "missing derivative test file: $file" >&2; exit 1; }
+          done
 
       - name: Run affected upstream suites
         working-directory: opencode-src/packages/cli
-        run: bun test --timeout 30000 test/upgrade.test.ts test/unguarded-updater.test.ts test/unguarded-service.test.ts test/debug-paths.test.ts test/service-lifecycle.test.ts
+        run: bun test --timeout 30000 test/upgrade.test.ts test/unguarded-updater.test.ts test/unguarded-service.test.ts test/unguarded-database.test.ts test/debug-paths.test.ts test/service-lifecycle.test.ts
+
+      - name: Run affected client suites
+        working-directory: opencode-src/packages/client
+        run: bun test test/unguarded-ownership.test.ts
+
+      - name: Run affected util derivatives
+        working-directory: opencode-src/packages/util
+        run: bun test test/unguarded-roots.test.ts test/observability-otlp.test.ts
 
       - name: Run affected core suites
         working-directory: opencode-src/packages/core
         run: bun run script/test.ts test/plugin/optimize.test.ts test/plugin/unguarded-routing.test.ts test/plugin/plan.test.ts test/plugin/permission-assert.test.ts
 
-      - name: Run affected util suites
-        working-directory: opencode-src/packages/util
-        run: bun test test/observability-otlp.test.ts
 
       - name: Build linux-x64
         working-directory: opencode-src/packages/cli

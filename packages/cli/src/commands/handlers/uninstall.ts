@@ -178,7 +178,6 @@ const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (inp
 
   intro(`Uninstall ${UNGUARDED_IDENTITY.name}`)
   log.message("This removes the candidate program and its background service.")
-  log.message("Sessions, credentials, configuration, and other profile data are kept.")
 
   if (!installation) {
     log.warn("OPENCODE_UNGUARDED_ROOT is not set; refusing to guess an installation directory.")
@@ -192,11 +191,25 @@ const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (inp
   if (!(yield* fs.exists(launcher)) || !(yield* fs.exists(binary)))
     return yield* Effect.fail(new Error(`refusing to remove ${root}: it is not an opencode-unguarded installation`))
 
+  // An installation that contains the profile cannot be removed without
+  // deleting durable data. Refuse before listing or stopping anything.
+  const rootReal = yield* fs.realPath(root)
+  // global.data is <profile>/data/opencode.
+  const profileRoot = yield* fs.realPath(path.dirname(path.dirname(global.data)))
+  if (rootReal === profileRoot || rootReal.startsWith(profileRoot + path.sep) || profileRoot.startsWith(rootReal + path.sep))
+    return yield* Effect.fail(
+      new Error(
+        `refusing to remove ${rootReal}: it overlaps the application profile (${profileRoot}). ` +
+          `Move the profile with OPENCODE_UNGUARDED_PROFILE, then uninstall.`,
+      ),
+    )
+
   const registration = path.join(global.state, "service-unguarded.json")
   const stop = yield* readOwnedRegistration(fs, registration)
   const command = yield* findCommandLink(fs, launcher, global.home)
 
-  log.info(`  Installation: ${root}`)
+  log.message("Sessions, credentials, configuration, and other profile data are kept.")
+  log.info(`  Installation: ${rootReal}`)
   log.info(`  Service registration: ${registration}`)
   if (stop) log.info(`  Background service: pid ${stop.pid}`)
   if (command) log.info(`  Command link: ${command}`)
@@ -209,7 +222,7 @@ const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (inp
   if (!input.force) {
     yield* requireInteractive("Use --force to uninstall without an interactive terminal, or --dry-run to preview.")
     const accepted = yield* prompt(() =>
-      confirm({ message: `Remove ${UNGUARDED_IDENTITY.name} from ${root}?`, initialValue: false }),
+      confirm({ message: `Remove ${UNGUARDED_IDENTITY.name} from ${rootReal}?`, initialValue: false }),
     )
     if (!accepted) {
       outro("Cancelled")
@@ -231,10 +244,13 @@ const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (inp
         }),
       ),
     )
+    // A service that refuses to stop would keep running against a deleted
+    // installation, so removal does not proceed.
+    if (errors.length > 0) return yield* Effect.fail(new Error(errors.join("\n")))
   }
 
   progress.start("Removing the derivative installation...")
-  yield* fs.remove(root, { recursive: true, force: true }).pipe(
+  yield* fs.remove(rootReal, { recursive: true, force: true }).pipe(
     Effect.tap(() => Effect.sync(() => progress.stop("Removed the derivative installation"))),
     Effect.catch((error) =>
       Effect.sync(() => {
@@ -248,10 +264,11 @@ const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (inp
   outro("Done")
 })
 
-// Only a registration written by this derivative may be signalled.
+// Only a registration written by this derivative may be signalled, and only
+// while it still describes the same live instance.
 const readOwnedRegistration = (fs: FileSystem.FileSystem, file: string) =>
   fs.readFileString(file).pipe(
-    Effect.map((text) => JSON.parse(text) as { pid?: number; derivative?: string }),
+    Effect.map((text) => JSON.parse(text) as { pid?: number; derivative?: string; version?: string; url?: string }),
     Effect.map((found) =>
       found.derivative === UNGUARDED_IDENTITY.name && Number.isInteger(found.pid) && (found.pid ?? 0) > 0
         ? { pid: found.pid! }
@@ -270,8 +287,7 @@ const findCommandLink = (fs: FileSystem.FileSystem, launcher: string, home: stri
       const link = path.join(directory, name)
       const target = yield* fs.readLink(link).pipe(Effect.orElseSucceed(() => undefined))
       if (target === undefined) continue
-      const resolved = path.resolve(directory, target)
-      if (resolved === launcher) return link
+      if (path.resolve(directory, target) === launcher) return link
     }
     return undefined
   })

@@ -4,7 +4,7 @@ import { contenderPool, spawnServiceContender } from "../service-contender.js"
 import { defaultEnsureTiming, ensureTiming, type EnsureTiming } from "../service-timing.js"
 import { matchesVersion } from "../service-version.js"
 import { PtyHandoff } from "../pty-handoff.js"
-import { decide, fallback, headers, probeResult, same } from "../service-probe.js"
+import { decide, fallback, headers, ownedByThisBuild, probeResult, same } from "../service-probe.js"
 
 export * from "../service.js"
 export { headers }
@@ -19,6 +19,7 @@ export { headers }
 export async function discover(options: DiscoverOptions = {}) {
   const found = (await registered(options.file)).service
   if (found?.state !== "ready") return undefined
+  if (!ownedByThisBuild(found.info)) return undefined
   if (!found.compatible) return undefined
   if (!matchesVersion(found.version, options)) return undefined
   return found.endpoint
@@ -153,6 +154,13 @@ async function waitUntilStopped(pid: number, timing: EnsureTiming) {
 async function terminate(info: Info, options: { readonly file?: string }, timing: EnsureTiming) {
   const current = await read(options.file)
   if (current === undefined || !same(current, info)) return
+  // A stale registration can outlive its process; only signal a PID that the
+  // registered endpoint still reports as its own.
+  if ((await probeResult(info, timing.requestTimeout)).service === undefined)
+    throw new Error(
+      `refusing to stop service pid ${info.pid}: the registered endpoint did not confirm it is the owner. ` +
+        `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
+    )
   signal(info.pid, "SIGTERM")
   // The registration can disappear or change hands before this process exits. Only the PID we
   // signalled can tell us whether it has stopped, so escalate based on that process.
