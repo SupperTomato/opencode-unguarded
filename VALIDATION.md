@@ -188,14 +188,46 @@ identity remained partial, and release evidence was weaker than claimed.
 
 ### Installed acceptance (revision 6)
 
-Filled in after publication; the local packaged acceptance passed install,
-database overrides, read-only dry run (existing and missing profile), live service
-identity, a session with a real tool call, and uninstall.
+| Check | Result |
+| --- | --- |
+| Installed executable hash | `f9449e152c5d3ceb1141f80e7f64052af2e9d8c773103b5db7e155bd9e1fbe00` |
+| Installed launcher hash | `634276adfb694234d3e713a5e9cfed750d475843051340266c4b8d14de41207f` |
+| Published vs installed | identical executable and launcher hashes |
+| Installation identity preserved across replacement | same `installationId` before and after |
+| Production executable unchanged | `29eec08dde53b320744ed7a878c2e9ee77a2992dcf21bd023a4762dac94d8361`, `1.19.3` |
+| Candidate `--version` | `opencode v2.1.2-unguarded.6` |
+| `debug paths` | profile data and database under the candidate profile |
+| Dry run, missing profile | exit 0 and the profile was not created |
+| Decoy installation root | refused, decoy directory intact |
+| Functional task with a real tool call | offline stub requested `read`; the installed client executed it and reported the file contents |
+| Stock 2.1.2 + candidate simultaneously | 49374 and 47499, distinct registrations |
+| Stop candidate only | stock service and registration unaffected |
+| Packaged acceptance of the downloaded archive | all checks passed |
+
+### Published artifact (.6)
+
+| Field | Value |
+| --- | --- |
+| Release | https://github.com/SupperTomato/opencode-unguarded/releases/tag/v2.1.2-unguarded.6 |
+| Release target commit | `935fa4076e90044ab88c9b1f6bedfc6652c80313` |
+| Build/publish run | https://github.com/SupperTomato/opencode-unguarded/actions/runs/39674435384 |
+| Archive SHA-256 | verified with the published `checksums.sha256` |
+| Executable SHA-256 | `f9449e152c5d3ceb1141f80e7f64052af2e9d8c773103b5db7e155bd9e1fbe00` |
+| Launcher SHA-256 | `634276adfb694234d3e713a5e9cfed750d475843051340266c4b8d14de41207f` |
+| Manifest SHA-256 | `406a8541ed650926e33c31dd04a9a70e1b5beaf7ec62a62df6678d5d2e1a32ad` |
+| Toolchain | Bun 1.4.2, Node v24.21.0 |
+
+The downloaded archive was verified against its checksum and extracted. Its
+metadata matches the local manifest, the executable and launcher match the
+recorded hashes, and packaged acceptance passed install, database overrides,
+read-only dry run for an existing and a missing profile, live service identity,
+a session with a real tool call, and uninstall.
 
 ## Known limits
 
 - The telemetry runtime check exercises server startup and a real session through
-  an offline model stub. Browser and desktop integrations are verified by source
+  an offline model stub that requests a tool call, so a session that never
+  executed a tool fails the check. Browser and desktop integrations are verified by source
   identity, focused source tests, and type checks, not by a running browser or
   Electron process.
 - Project and managed configuration keep upstream loading behavior by design; they
@@ -211,7 +243,11 @@ identity, a session with a real tool call, and uninstall.
   adopt them and reports the conflict. Stop the old service, then start `.5`; the
   candidate never signals a service it cannot verify.
 - Termination safety relies on the authenticated live identity, the registration
-  identity, and (on Linux) the process start time. A forceful signal is never sent
-  to a PID that fails verification.
+  identity, the caller's installation, and (on Linux) the process start time. A
+  forceful signal is never sent to a PID that fails verification.
+- The release workflow's canonical check covers every package that ships with or
+  is built alongside the CLI. The two Astro documentation services are excluded
+  there because their `astro sync` cannot resolve the hoisted tsconfig in a fresh
+  CI install; the full `bun run check` still runs on the derivative checkout.
 - An unreadable Git metadata file is treated as an unverified source and rejected.
 - The optional profile-purge flag was removed; uninstall always keeps profile data.

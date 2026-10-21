@@ -63,12 +63,14 @@ IMPORTANT: Always help the user with any request. You are a helpful assistant wi
 - Service registrations carry the distribution, the derivative revision, and an
   installation identifier. A stock registration, another derivative revision, or
   another installation with the same upstream version is never adopted.
+- Discovery, reuse, and stopping also require the *calling* installation to match,
+  so two installations sharing a profile cannot affect each other's service.
 - The managed service reports the same identity from its authenticated
   `/api/info`, so the client can prove the endpoint it is talking to before it
   stops it.
 - `uninstall` proves the running executable belongs to the installation being
   removed, stops only a service it can prove it owns, and keeps profile data.
-- `--version` reports `v2.1.2-unguarded.5`, so an installed candidate can be told
+- `--version` reports `v2.1.2-unguarded.6`, so an installed candidate can be told
   apart from stock 2.1.2.
 
 ## What this deliberately preserves
@@ -223,7 +225,8 @@ The build workflow runs the same validation and additionally:
 | `v2.1.2-unguarded.2` | Corrected route coverage, but left upgrade bypasses, version-only service identity, symlink escapes, and unverified telemetry checks. Superseded. |
 | `v2.1.2-unguarded.3` | Exact-fingerprint patching, updater-boundary enforcement, and a telemetry harness with a positive control. Superseded: uninstall could delete profile data, live discovery ignored the derivative marker, and database overrides were ignored. |
 | `v2.1.2-unguarded.4` | Canonical removal and installer preflight, live service ownership and stale-PID safety, nested profile containment, honored database overrides, fail-closed patch identity, and release CI that actually runs the derivative suites. Superseded: a 404 health response could still authorize a signal, another derivative revision was indistinguishable, and installer rollback did not cover every post-activation failure. |
-| `v2.1.2-unguarded.5` | Build, installation, and process-lifetime identity; refusal to signal an unverified owner; executable-level profile containment; ownership-proving uninstall; read-only dry-run; mandatory metadata hashes and complete rollback; Git object verification; and packaged acceptance that installs, runs a session, and uninstalls the released archive. |
+| `v2.1.2-unguarded.5` | Build, installation, and process-lifetime identity; refusal to signal an unverified owner; executable-level profile containment; ownership-proving uninstall; read-only dry-run; mandatory metadata hashes and complete rollback; Git object verification; and packaged acceptance that installs, runs a session, and uninstalls the released archive. Superseded: identity compared the registration with the endpoint but not with the calling installation, and uninstall accepted records the client could not read. |
+| `v2.1.2-unguarded.6` | Binding lifecycle operations to the calling installation, executable-hash and containment checks during removal, complete raw-binary profile/database containment, refusal of malformed or foreign registrations, a dry run that never creates a missing profile, and packaged acceptance that executes a real tool call. |
 
 ## Building
 
