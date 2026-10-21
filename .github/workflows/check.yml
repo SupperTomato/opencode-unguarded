@@ -33,7 +33,7 @@ jobs:
             jq -e '.upstream.version' "$file" > /dev/null
             jq -e '.files | length > 0' "$file" > /dev/null
             jq -e '.protected | length > 0' "$file" > /dev/null
-            jq -e '[.files[] | .pristine, .final] | all(test("^[0-9a-f]{64}$"))' "$file" > /dev/null
+            jq -e '[.files[] | .final, (.pristine // "added")] | all(test("^([0-9a-f]{64}|added)$"))' "$file" > /dev/null
           done
 
       - name: Install derivative tooling dependencies
