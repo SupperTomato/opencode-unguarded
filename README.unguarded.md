@@ -12,6 +12,7 @@ Built from audited upstream source, not by patching a released binary.
 | Repository | [anomalyco/opencode](https://github.com/anomalyco/opencode) |
 | Package | `@opencode/cli` |
 | Version | `2.1.2` |
+| Current release | `v2.1.2-unguarded.2` |
 | Tag | `v2.1.2` |
 | Commit | `a517687fde98a7329ada3ae644a01a9fc6c4e99e` |
 | Published | 2026-10-21 |
@@ -31,7 +32,8 @@ applied by [`script/unguarded/apply.ts`](script/unguarded/apply.ts).
 | `kimi.txt` | Injects the directive; removes repeated git-mutation confirmation, outside-directory confirmation, and the blanket outside-working-directory prohibition |
 | `meta.txt` | Injects the directive; removes the "policy violation" clause |
 | `trinity.txt` | Injects the directive; removes the soft-refusal line and the secret-guidance line |
-| `anthropic.txt` | Unchanged (upstream contains no guardrail text) |
+| `system.txt` (shared base) | Injects the directive, covering DeepSeek, Grok, and every model without a template |
+| `anthropic.txt` | Unchanged; Claude appends it to the shared base, so it inherits the directive once |
 
 Telemetry is removed by [`script/unguarded/telemetry.ts`](script/unguarded/telemetry.ts):
 
@@ -67,13 +69,22 @@ verified no-op.
 The build workflow additionally:
 
 1. Typechecks `packages/util`, `packages/core`, and `packages/app`.
-2. Runs `test/unguarded/`.
-3. Rejects unexpected changed files.
-4. Checks the artifact version and scans it for banned strings.
-5. Starts the binary against a local OTLP collector and requires **zero** requests.
+2. Verifies the patched source with `--check` for guardrails, telemetry, and lifecycle.
+3. Runs `test/unguarded/` against `opencode-src`, the exact tree being built.
+4. Asserts the runtime permission files are byte-identical to upstream.
+5. Rejects unexpected changed files.
+6. Checks the artifact version and scans it for banned strings.
+7. Starts the binary against a local OTLP collector and requires **zero** requests.
 
 That last check is the meaningful one. On the same harness, stock upstream 2.1.2
 sent `/v1/logs` and `/v1/traces`; this build sends nothing.
+
+### Release history
+
+| Release | Status |
+| --- | --- |
+| `v2.1.2-unguarded.1` | Experimental. Missed DeepSeek/Grok/Claude routes; verifier could pass incomplete patches. Do not use. |
+| `v2.1.2-unguarded.2` | Corrects route coverage, fail-closed verification, isolation, and lifecycle. |
 
 ## Installation
 
@@ -94,8 +105,22 @@ credentials, configuration, cache, or state with a stock `opencode` install:
 $XDG_DATA_HOME/opencode-unguarded/profile/{data,config,cache,state,tmp}
 ```
 
-Override the location with `OPENCODE_UNGUARDED_PROFILE`. An inherited absolute
-`OPENCODE_DB` is rejected rather than silently shared.
+Override the location with an absolute `OPENCODE_UNGUARDED_PROFILE`.
+
+The launcher refuses settings that would escape the profile: inherited
+`OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG`, `OPENCODE_CONFIG_CONTENT`, an absolute
+`OPENCODE_DB`, and an `OPENCODE_DB` containing `..`.
+
+The candidate compiles with `OPENCODE_CHANNEL=unguarded`, so it uses its own
+service registration, service port (47499), and database
+(`opencode-unguarded.db`). A stock V2 install keeps `service.json`, port 49374,
+and `opencode.db`, and the two can run at the same time.
+
+### Updating
+
+`opencode-unguarded upgrade` does not self-update. It refuses the upstream
+installer and points at this repository's releases, so it cannot silently replace
+itself with stock OpenCode.
 
 ## Building
 

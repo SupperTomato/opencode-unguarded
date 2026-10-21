@@ -105,3 +105,55 @@ repository completed with tool use (Glob, Read) and a correct answer.
 - The binary still contains inert `OtlpLogger` / `/v1/traces` strings pulled in by
   the `effect` package's observability barrel; runtime egress is zero, which is
   the meaningful property.
+
+---
+
+# Revision .2 — correction record
+
+`v2.1.2-unguarded.1` was experimental and is superseded. The audit reproduced
+these defects; each is now covered by a regression test.
+
+| Audit finding | Defect | Fix | Test |
+| --- | --- | --- | --- |
+| C | `verify`/`fullyApplied` skipped `replace` actions, approving incomplete patches | Require original absence + replacement presence; reject partial state | `manifest.test.ts` state contract |
+| C | No manifest validation; absolute/traversal paths accepted | Validate structure, semver, SHA, ids, actions; contain paths to root | `manifest.test.ts` validation |
+| C | Unsupported checkout accepted | `verifyUpstreamIdentity` requires matching version | `manifest.test.ts` identity |
+| D | DeepSeek/Grok/Claude never received the directive | Inject into shared `system.txt`; Claude inherits via append | `routes.test.ts` |
+| E | Verifier passed on empty/nonexistent roots | Require checkout identity and every target file | `telemetry.test.ts` |
+| E | Marker comment trusted as proof | Verify behavior; ignore markers | `telemetry.test.ts` |
+| E | Dynamic Sentry import undetected | Detect static + dynamic imports and construction | `telemetry.test.ts` |
+| E | First pass differed from second (app Vite) | Single-pass determinism | `telemetry.test.ts` |
+| F | Inherited config env escaped the profile | Launcher refuses config overrides | manual + launcher |
+| F | Relative `..` DB traversal accepted | Launcher rejects `..` and absolute DB | manual |
+| F | Service port collided with stock V2 | Distinct channel, port 47499, distinct DB | live coexistence |
+| G | Upgrade ran the upstream installer | Refuse with derivative instructions | live `upgrade` |
+| H | CI tested the derivative checkout, not the built source | `UNGUARDED_SOURCE_ROOT` + `--check` on `opencode-src` | CI |
+| I | Provenance omitted derivative identity | `BUILD-INFO.json` records commit, manifest, run, toolchain | release |
+
+## Verified on the downloaded `v2.1.2-unguarded.2` artifact
+
+| Check | Result |
+| --- | --- |
+| `sha256sum -c checksums.sha256` | OK |
+| `--version` | `opencode v2.1.2` |
+| `no restrictions` in binary | 4 occurrences (shared base + 3 templates + …) |
+| All banned strings | 0 |
+| Database path | `opencode-unguarded.db` |
+| OTLP collector with endpoint set | `HITS:[]` |
+| Inherited `OPENCODE_CONFIG_DIR` | rejected |
+| Absolute `OPENCODE_DB` | rejected |
+| `OPENCODE_DB` with `..` | rejected |
+| `upgrade` | refuses upstream installer |
+| Stock V2 + candidate simultaneously | both listening (49374 and 47499) |
+| Functional task | correct answer via Glob + Read |
+| Stock `opencode` unchanged | `1.19.3`, sha256 `29eec08d…` |
+
+## Known limitations
+
+- Linux x64 only.
+- Provider-side moderation is unaffected.
+- Custom agent prompts replace built-in instructions, so the directive does not
+  apply to agents that define their own `system`.
+- Inert `OtlpLogger` / `/v1/traces` strings remain in the binary from the `effect`
+  observability barrel; runtime egress is zero, which is the tested property.
+- The candidate does not self-update; updates are manual from this repository.
