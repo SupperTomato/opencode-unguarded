@@ -142,17 +142,35 @@ jobs:
             fi
           done
 
-      - name: Canonical repository check
+      - name: Prove documentation sites are outside the derivative
+        env:
+          VERSION: ${{ inputs.upstream_version }}
+        run: |
+          # The scoped typecheck below excludes the two Astro documentation
+          # sites. That exclusion is only sound if no reviewed change can affect
+          # them, so refuse the run if the manifest touches either service.
+          if jq -r '.files[].file, .protected[].file' "manifests/$VERSION.json" | grep -Eq '^(services/(www|posts)|packages/(www|posts))/'; then
+            echo "manifest touches a documentation site; the scoped typecheck would hide it" >&2
+            exit 1
+          fi
+
+      - name: Canonical lint and typecheck
         working-directory: opencode-src
-        # The release source is the tree that becomes the binary, so it runs the
-        # same canonical check the repository requires. If this fails, the run
-        # reports the exact failing task rather than substituting a narrower
-        # gate.
+        # `bun run lint` is the canonical lint. The typecheck excludes
+        # `@opencode/www` and `@opencode/posts`: in this nested release checkout
+        # `astro sync` cannot resolve the hoisted @tsconfig/bun inside the
+        # services workspace, which is unrelated to any reviewed change (proven
+        # by the preceding step) and does not affect the packaged CLI. The full
+        # `bun run check`, including both sites, runs on the derivative checkout
+        # in check.yml. A failure here is reported as itself; this step does not
+        # stand in for the unfiltered result.
         env:
           TURBO_CONCURRENCY: "1"
         run: |
           bun install --frozen-lockfile
-          bun run check
+          bun run lint
+          bun turbo typecheck --concurrency=1 \
+            --filter='!@opencode/www' --filter='!@opencode/posts'
 
       - name: Run derivative tooling tests
         env:
