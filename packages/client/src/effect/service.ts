@@ -5,6 +5,7 @@ import { defaultEnsureTiming, ensureTiming, type EnsureTiming } from "../service
 import { matchesVersion } from "../service-version.js"
 import { PtyHandoff } from "../pty-handoff.js"
 import {
+  buildIdentity,
   decide,
   fallback,
   headers,
@@ -16,6 +17,8 @@ import {
   same,
   type LocalService,
 } from "../service-probe.js"
+import { authorizedRecord, shutdownInstance } from "../service-control.js"
+import { parseRegistration } from "../service-registration-decoder.js"
 
 export * from "../service.js"
 export { headers }
@@ -34,7 +37,7 @@ export type Info = import("../service.js").Info
 // Never spawns; escalation to ensure() is the caller's policy.
 /** Discover a healthy, compatible local service without starting one. */
 export const discover = Effect.fn("service.discover")(function* (options: DiscoverOptions = {}) {
-  const found = (yield* registered(options.file)).service
+  const found = (yield* registered(options.file, undefined, options.installation)).service
   if (found?.state !== "ready") return undefined
   if (!ownedByThisBuild(found.info)) return undefined
   if (!found.compatible) return undefined
@@ -178,7 +181,18 @@ const requireVerifiedOwner = Effect.fnUntraced(function* (
   options: StopOptions,
   timeout: number,
 ) {
-  if (ownerExited(info)) return "exited" as const
+  // A stale record is the caller's own business only. Authorize first: a
+  // foreign installation's exited owner must not be cleaned up here.
+  if (ownerExited(info)) {
+    if (!authorizedRecord(info, buildIdentity(), options.installation))
+      return yield* Effect.fail(
+        new Error(
+          `refusing to stop service pid ${info.pid}: the registration belongs to a different build or installation, ` +
+            `and its process is not running. Check ${options.file ?? fallback()}.`,
+        ),
+      )
+    return "exited" as const
+  }
   const probe = yield* Effect.promise(() => probeResult(info, timeout, options))
   if (probe.status !== "verified" || probe.service === undefined)
     return yield* Effect.fail(
@@ -204,14 +218,14 @@ export const Info = Schema.Struct({
   password: Schema.optional(Schema.String),
 })
 
-const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(Info))
-// A missing or corrupt file means no valid info; callers treat both
-// the same (the registering server self-evicts, clients rediscover).
+// One validated registration contract is shared with the Promise client and
+// uninstall, so a record one accepts is never absent to another.
 const read = Effect.fnUntraced(function* (file?: string) {
   const fs = yield* FileSystem.FileSystem
   const text = yield* fs.readFileString(file ?? fallback()).pipe(Effect.option)
   if (Option.isNone(text)) return undefined
-  return yield* decode(text.value).pipe(Effect.option, Effect.map(Option.getOrUndefined))
+  const decoded = parseRegistration(text.value)
+  return decoded._tag === "valid" ? decoded.info : undefined
 })
 
 const registered = Effect.fnUntraced(function* (file?: string, timeout?: number, installation?: string) {
@@ -225,7 +239,7 @@ const registered = Effect.fnUntraced(function* (file?: string, timeout?: number,
 const poll = (timing: EnsureTiming) =>
   Schedule.max([Schedule.spaced(timing.stopPollInterval), Schedule.recurs(timing.stopPollAttempts)])
 
-const signal = (pid: number, name: NodeJS.Signals) =>
+const signalStock = (pid: number, name: NodeJS.Signals) =>
   Effect.try({ try: () => process.kill(pid, name), catch: (cause) => cause }).pipe(Effect.ignore)
 
 const stopped = Effect.fnUntraced(function* (pid: number) {
@@ -251,17 +265,16 @@ const terminate = Effect.fnUntraced(function* (
   // builds keep upstream recovery, which deliberately replaces an unresponsive
   // owner that cannot answer.
   if (isDerivative()) {
-    // A provably exited owner leaves only a stale registration. Clearing it is
-    // safe and does not signal anything, so recovery is not blocked forever.
+    // Only a caller that is authorized for this record may clear a stale one.
     if (ownerExited(info)) {
-      const latest = yield* read(options.file)
-      if (latest !== undefined && same(latest, info)) {
-        const files = yield* FileSystem.FileSystem
-        yield* files.remove(options.file ?? fallback()).pipe(Effect.ignore)
-      }
+      if (!authorizedRecord(info, buildIdentity(), options.installation)) return
+      yield* removeRecord(options.file, info)
       return
     }
-    const verified = alreadyVerified ?? (yield* Effect.promise(() => probeResult(info, timing.requestTimeout, options))).service
+    // Never signal by numeric PID. Ask the authenticated endpoint to stop the
+    // exact instance the caller verified; it refuses if it is not that process.
+    const verified =
+      alreadyVerified ?? (yield* Effect.promise(() => probeResult(info, timing.requestTimeout, options))).service
     if (verified === undefined)
       return yield* Effect.fail(
         new Error(
@@ -269,19 +282,68 @@ const terminate = Effect.fnUntraced(function* (
             `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
         ),
       )
+    const outcome = yield* Effect.promise(() => shutdownInstance(info, timing.requestTimeout, options.installation))
+    if (outcome.status === "refused")
+      return yield* Effect.fail(
+        new Error(`refusing to stop service pid ${info.pid}: the running instance refused the request (${outcome.reason})`),
+      )
+    if (outcome.status === "unreachable")
+      return yield* Effect.fail(
+        new Error(
+          `refusing to stop service pid ${info.pid}: the instance could not be asked to stop (${outcome.reason}). ` +
+            `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
+        ),
+      )
+    if (outcome.status === "unsupported")
+      return yield* Effect.fail(
+        new Error(
+          `refusing to stop service pid ${info.pid}: this build cannot prove instance identity (${outcome.reason}). ` +
+            `Stop the process manually if it is still running.`,
+        ),
+      )
+    const done = yield* stopped(info.pid).pipe(Effect.retry(poll(timing)), Effect.option)
+    if (Option.isNone(done))
+      return yield* Effect.fail(
+        new Error(
+          `service process ${info.pid} accepted the shutdown request but is still running; ` +
+            `it was not signalled, so stop it manually if it remains`,
+        ),
+      )
+    const latest = yield* read(options.file)
+    if (latest === undefined || !same(latest, info)) return
+    yield* removeRecord(options.file, info)
+    return
   }
-  yield* signal(info.pid, "SIGTERM")
+  // Stock builds keep upstream recovery: an unresponsive owner is replaced.
+  yield* signalStock(info.pid, "SIGTERM")
   const done = yield* stopped(info.pid).pipe(Effect.retry(poll(timing)), Effect.option)
   // The registration can disappear or change hands before this process exits. Only the PID we
   // signalled can tell us whether it has stopped, so escalate based on that process.
   if (Option.isNone(done)) {
-    yield* signal(info.pid, "SIGKILL")
+    yield* signalStock(info.pid, "SIGKILL")
     yield* stopped(info.pid).pipe(Effect.retry(poll(timing)))
   }
   const latest = yield* read(options.file)
   if (latest === undefined || !same(latest, info)) return
   const fs = yield* FileSystem.FileSystem
   yield* fs.remove(options.file ?? fallback()).pipe(Effect.ignore)
+})
+
+// Remove the observed record, putting back anything a concurrent writer
+// published in the meantime. Rename first, so the comparison and the delete
+// cannot race with a new registration under the same name.
+const removeRecord = Effect.fnUntraced(function* (file: string | undefined, info: Info) {
+  const fs = yield* FileSystem.FileSystem
+  const target = file ?? fallback()
+  const quarantine = `${target}.stale-${crypto.randomUUID()}`
+  yield* fs.rename(target, quarantine).pipe(Effect.ignore)
+  const text = yield* fs.readFileString(quarantine).pipe(Effect.option)
+  const current = Option.isSome(text) ? parseRegistration(text.value) : undefined
+  if (current === undefined || current._tag !== "valid" || !same(current.info, info)) {
+    yield* fs.rename(quarantine, target).pipe(Effect.ignore)
+    return
+  }
+  yield* fs.remove(quarantine).pipe(Effect.ignore)
 })
 
 /** Effect-based local service lifecycle operations. */

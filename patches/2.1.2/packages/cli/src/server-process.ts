@@ -74,6 +74,8 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const foreground = options.mode === "default"
+      // ServiceConfig.options() rejects a saved environment override that would
+      // undo startup validation, before the service reads any of it.
       const serviceOptions = options.mode === "service" ? yield* ServiceConfig.options() : undefined
       const config = options.mode === "service" ? yield* ServiceConfig.read() : {}
       const hostname = options.hostname ?? config.hostname ?? "127.0.0.1"
@@ -121,6 +123,22 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
             }
       const transform = yield* WebUi.handler()
       const remote = { urls: [] as ReadonlyArray<string> }
+      // The managed daemon exposes an authenticated shutdown endpoint bound to
+      // this exact instance and process lifetime. A client that observed a
+      // stale registration cannot use it to stop a replacement process.
+      const shutdownRef: { current?: Effect.Effect<void> } = {}
+      const control = {
+        available: options.mode === "service" && UNGUARDED,
+        instanceId: instanceID,
+        startTime,
+        // The server's own latch closes its listener; the managed process then
+        // exits so the registration and port do not linger. This runs only
+        // after the caller proved it addressed this exact instance.
+        shutdown: Effect.suspend(() => shutdownRef.current ?? Effect.void).pipe(
+          Effect.andThen(Effect.sleep("250 millis")),
+          Effect.andThen(Effect.sync(() => process.exit(0))),
+        ),
+      }
       const launch = start(
         {
           app: {
@@ -186,6 +204,7 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
             },
         transform,
         () => remote.urls,
+        control,
       )
       const server = yield* launch.pipe(
         Effect.catch((error) => {

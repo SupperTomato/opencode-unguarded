@@ -1,10 +1,11 @@
-import { readFile, rm } from "node:fs/promises"
+import { readFile, rename, rm, unlink } from "node:fs/promises"
 import type { DiscoverOptions, Endpoint, Info, EnsureOptions, StopOptions } from "../service.js"
 import { contenderPool, spawnServiceContender } from "../service-contender.js"
 import { defaultEnsureTiming, ensureTiming, type EnsureTiming } from "../service-timing.js"
 import { matchesVersion } from "../service-version.js"
 import { PtyHandoff } from "../pty-handoff.js"
 import {
+  buildIdentity,
   decide,
   fallback,
   headers,
@@ -16,6 +17,8 @@ import {
   same,
   type LocalService,
 } from "../service-probe.js"
+import { authorizedRecord, removeStaleRecord, shutdownInstance } from "../service-control.js"
+import { parseRegistration } from "../service-registration-decoder.js"
 
 export * from "../service.js"
 export { headers }
@@ -93,7 +96,9 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
           announce("version-mismatch", service.version)
           if (service.state !== "ready")
             console.warn("Background service is not ready; replacement cannot preserve persistent terminals")
-          await stop({ file: options.file, pty: decision.pty }).catch(() => undefined)
+          await stop({ file: options.file, pty: decision.pty, installation: options.installation }).catch(
+          () => undefined,
+        )
           pool.evict(service.info.pid)
         }
       } else {
@@ -138,7 +143,16 @@ export async function stop(options: StopOptions = {}) {
 }
 
 async function requireVerifiedOwner(info: Info, options: StopOptions, timeout: number) {
-  if (ownerExited(info)) return "exited" as const
+  // A stale record is the caller's own business only. Authorize first: a
+  // foreign installation's exited owner must not be cleaned up here.
+  if (ownerExited(info)) {
+    if (!authorizedRecord(info, buildIdentity(), options.installation))
+      throw new Error(
+        `refusing to stop service pid ${info.pid}: the registration belongs to a different build or installation, ` +
+          `and its process is not running. Check ${options.file ?? fallback()}.`,
+      )
+    return "exited" as const
+  }
   const probe = await probeResult(info, timeout, options)
   if (probe.status !== "verified" || probe.service === undefined)
     throw new Error(
@@ -156,14 +170,11 @@ function ownershipError(outcome: { readonly reason?: string }) {
   )
 }
 
-async function read(file?: string) {
+async function read(file?: string): Promise<Info | undefined> {
   const text = await readFile(file ?? fallback(), "utf8").catch(() => undefined)
   if (text === undefined) return undefined
-  try {
-    return JSON.parse(text) as Info
-  } catch {
-    return undefined
-  }
+  const decoded = parseRegistration(text)
+  return decoded._tag === "valid" ? decoded.info : undefined
 }
 
 async function registered(file?: string, timeout?: number, installation?: string) {
@@ -172,12 +183,14 @@ async function registered(file?: string, timeout?: number, installation?: string
   return { info, ...(await probeResult(info, timeout, { installation })) }
 }
 
-function signal(pid: number, name: NodeJS.Signals) {
-  try {
-    process.kill(pid, name)
-  } catch {}
-}
-
+/**
+ * Whether the registered process is gone.
+ *
+ * A PID that no longer exists is gone. A PID that is alive but whose start time
+ * differs belongs to a different process, which is also "the owner is gone" —
+ * but only ownerExited() may draw that conclusion, because it needs the recorded
+ * lifetime. Returning true here means only "nothing is running at this PID now".
+ */
 function stopped(pid: number) {
   try {
     process.kill(pid, 0)
@@ -207,30 +220,72 @@ async function terminate(
   // registered owner. Stock builds keep upstream recovery, which deliberately
   // replaces an unresponsive owner that cannot answer.
   if (isDerivative()) {
-    // A provably exited owner leaves only a stale registration. Clearing it is
-    // safe and does not signal anything, so recovery is not blocked forever.
+    // Only a caller that is authorized for this record may clear a stale one.
+    // "The PID is gone" is not authority: a foreign installation's dead record
+    // is still that installation's business.
     if (ownerExited(info)) {
-      const latest = await read(options.file)
-      if (latest !== undefined && same(latest, info)) await rm(options.file ?? fallback(), { force: true })
+      if (!authorizedRecord(info, buildIdentity(), options.installation)) return
+      await removeStaleRecord(
+        options.file,
+        info,
+        { rename, readFile: (file) => readFile(file, "utf8"), unlink },
+        same,
+      )
       return
     }
-    const verified = alreadyVerified ?? (await probeResult(info, timing.requestTimeout, options)).service
-    if (verified === undefined)
+    // Never signal by numeric PID. Ask the authenticated endpoint to stop the
+    // exact instance the caller verified; it refuses if it is not that process.
+    const owner = alreadyVerified ?? (await probeResult(info, timing.requestTimeout, options)).service
+    if (owner === undefined)
       throw new Error(
         `refusing to stop service pid ${info.pid}: the registered endpoint did not prove it is this owner. ` +
           `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
       )
+    const outcome = await shutdownInstance(info, timing.requestTimeout, options.installation)
+    if (outcome.status === "refused")
+      throw new Error(`refusing to stop service pid ${info.pid}: the running instance refused the request (${outcome.reason})`)
+    if (outcome.status === "unreachable")
+      throw new Error(
+        `refusing to stop service pid ${info.pid}: the instance could not be asked to stop (${outcome.reason}). ` +
+          `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
+      )
+    if (outcome.status === "unsupported")
+      throw new Error(
+        `refusing to stop service pid ${info.pid}: this build cannot prove instance identity (${outcome.reason}). ` +
+          `Stop the process manually if it is still running.`,
+      )
+    if (!(await waitUntilStopped(info.pid, timing)))
+      throw new Error(
+        `service process ${info.pid} accepted the shutdown request but is still running; ` +
+          `it was not signalled, so stop it manually if it remains`,
+      )
+    const latest = await read(options.file)
+    if (latest === undefined || !same(latest, info)) return
+    await removeStaleRecord(
+        options.file,
+        info,
+        { rename, readFile: (file) => readFile(file, "utf8"), unlink },
+        same,
+      )
+    return
   }
-  signal(info.pid, "SIGTERM")
+  // Stock builds keep upstream recovery: an unresponsive owner is replaced.
+  signalStock(info.pid, "SIGTERM")
   // The registration can disappear or change hands before this process exits. Only the PID we
   // signalled can tell us whether it has stopped, so escalate based on that process.
   if (!(await waitUntilStopped(info.pid, timing))) {
-    signal(info.pid, "SIGKILL")
+    signalStock(info.pid, "SIGKILL")
     if (!(await waitUntilStopped(info.pid, timing))) throw new Error(`Server process ${info.pid} is still running`)
   }
   const latest = await read(options.file)
   if (latest === undefined || !same(latest, info)) return
   await rm(options.file ?? fallback(), { force: true })
+}
+
+function signalStock(pid: number, name: NodeJS.Signals) {
+  try {
+    process.kill(pid, name)
+  } catch {}
 }
 
 function delay(milliseconds: number) {

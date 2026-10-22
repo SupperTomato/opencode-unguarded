@@ -1,8 +1,7 @@
 import { TextField } from "@opencode/ui/text-field"
-import type { captureException } from "@sentry/solid"
 import { Logo } from "@opencode/ui/logo"
 import { Button } from "@opencode/ui/button"
-import { Component, createSignal, onCleanup, onMount, Show } from "solid-js"
+import { Component, onCleanup, onMount, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Predicate } from "effect"
 import { Updater } from "@opencode/gui-extensions/updater"
@@ -259,12 +258,12 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
   const status = () => errorStatus(props.error)
   let recordedFatalError: Promise<void> | undefined
 
+  // opencode-unguarded: error reporting is removed at build time, so the page
+  // keeps local error presentation and the platform's local crash record only.
   const [store, setStore] = createStore<{
     actionError: string | undefined
-    captureException: typeof captureException | undefined
   }>({
     actionError: undefined,
-    captureException: undefined,
   })
 
   function ensureFatalErrorRecorded() {
@@ -282,11 +281,6 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
 
   onMount(() => {
     void ensureFatalErrorRecorded().catch(() => undefined)
-    void import("@sentry/solid")
-      .then(({ captureException, isEnabled }) => {
-        if (isEnabled()) setStore("captureException", () => captureException)
-      })
-      .catch(() => undefined)
   })
 
   // A crash can take the extension root down with the app, so the page reaches the updater's
@@ -361,24 +355,6 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
             <Button size="large" variant="ghost" onClick={exportDebugLogs}>
               {language.t("error.page.action.exportLogs")}
             </Button>
-          </Show>
-          <Show when={store.captureException}>
-            {(capture) => {
-              const [reported, setReported] = createSignal(false)
-
-              return (
-                <Button
-                  size="large"
-                  disabled={reported()}
-                  onClick={() => {
-                    capture()(props.error)
-                    setReported(true)
-                  }}
-                >
-                  {language.t(reported() ? "error.page.action.reported" : "error.page.action.report")}
-                </Button>
-              )
-            }}
           </Show>
           <Show when={updater()}>
             <Show

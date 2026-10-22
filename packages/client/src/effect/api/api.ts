@@ -58,6 +58,14 @@ export type ServerInfoOperation<E = never> = () => Effect.Effect<ServerInfoOutpu
 export type ServerPairOutput = { readonly code: string; readonly expires_in: number }
 export type ServerPairOperation<E = never> = () => Effect.Effect<ServerPairOutput, E>
 
+export type ServerShutdownInput = {
+  readonly id: string
+  readonly installation: string
+  readonly startTime?: string | undefined
+}
+export type ServerShutdownOutput = void
+export type ServerShutdownOperation<E = never> = (input: ServerShutdownInput) => Effect.Effect<ServerShutdownOutput, E>
+
 export type ServerConnectInput = { readonly code: string }
 export type ServerConnectOutput = { readonly token: string }
 export type ServerConnectOperation<E = never> = (input: ServerConnectInput) => Effect.Effect<ServerConnectOutput, E>
@@ -65,6 +73,7 @@ export type ServerConnectOperation<E = never> = (input: ServerConnectInput) => E
 export interface ServerApi<E = never> {
   readonly info: ServerInfoOperation<E>
   readonly pair: ServerPairOperation<E>
+  readonly shutdown: ServerShutdownOperation<E>
   readonly connect: ServerConnectOperation<E>
 }
 

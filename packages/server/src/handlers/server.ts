@@ -1,17 +1,15 @@
 import { Duration, Effect } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
+import { HttpApiSchema } from "effect/http-api"
 import { HttpApiBuilder } from "effect/http-api"
 import { PersistentPty } from "@opencode/core/persistent-pty"
-import { UnauthorizedError } from "@opencode/protocol/errors"
+import { ConflictError, UnauthorizedError } from "@opencode/protocol/errors"
 import { Api } from "../api"
 import { ServerAuth } from "../auth"
 import { ServerInfo } from "../server-info"
-import { ProcessIdentity } from "@opencode/util/process-identity"
+import { ServerIdentity } from "../identity"
+import { ServerControl } from "../control"
 import { ServerPairing } from "../pairing"
-
-// Captured once: a process's start time is a property of its lifetime, not of
-// an individual request.
-const startTime = ProcessIdentity.processStartTime()
 
 export const ServerHandler = HttpApiBuilder.group(Api, "server.server", (handlers) =>
   Effect.gen(function* () {
@@ -25,12 +23,7 @@ export const ServerHandler = HttpApiBuilder.group(Api, "server.server", (handler
           return {
             version: info.app.version ?? "unknown",
             pid: process.pid ?? 0,
-            ...(info.app.derivative === undefined ? {} : { derivative: info.app.derivative }),
-            ...(info.app.derivativeRevision === undefined
-              ? {}
-              : { derivativeRevision: info.app.derivativeRevision }),
-            ...(info.app.installation === undefined ? {} : { installation: info.app.installation }),
-            ...(startTime === undefined ? {} : { startTime }),
+            ...ServerIdentity.identity(info.app),
             urls: info.urls(),
             paths: info.paths,
             capabilities: { persistentPty: PersistentPty.available },
@@ -38,6 +31,32 @@ export const ServerHandler = HttpApiBuilder.group(Api, "server.server", (handler
         }),
       )
       .handle("server.pair", () => pairing.issue())
+      .handle(
+        "server.shutdown",
+        Effect.fn(function* (ctx) {
+          const info = yield* ServerInfo.Service
+          const control = yield* ServerControl.Service
+          // Only a managed daemon exposes this control surface. A request that
+          // names a different instance or process lifetime is refused: the
+          // caller's registration may be stale, and this process must not be
+          // stopped on behalf of a different owner.
+          if (!control.available)
+            return yield* new ConflictError({ message: "this server is not a managed service", resource: "lifecycle" })
+          if (control.instanceId !== ctx.payload.id || info.app.installation !== ctx.payload.installation)
+            return yield* new ConflictError({
+              message: "the requested service instance is not running here",
+              resource: "lifecycle",
+            })
+          if (control.startTime !== ctx.payload.startTime)
+            return yield* new ConflictError({
+              message: "the requested process lifetime is not running here",
+              resource: "lifecycle",
+            })
+          // Let the response flush before the process starts shutting down.
+          yield* Effect.forkDetach(Effect.sleep("10 millis").pipe(Effect.andThen(control.shutdown)))
+          return HttpApiSchema.NoContent.make()
+        }),
+      )
       .handle(
         "server.connect",
         Effect.fn(function* (ctx) {

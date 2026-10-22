@@ -400,8 +400,15 @@ export const makeDaemonTransport = Effect.fn("PersistentPty.makeDaemonTransport"
 
   // A replacement must own its inherited daemon before the server becomes ready. Terminals are
   // best-effort: any failure abandons the old daemon so the restart itself always succeeds.
+  //
+  // Ownership is claimed on the daemon's *current* location before anything is
+  // moved. Claiming authenticates the handoff ticket, so an unexpired but
+  // invalid ticket cannot cause this process to rename a foreign daemon's
+  // registration or shut that daemon down. Once the connection is established it
+  // survives the directory rename, so the daemon keeps a single owner.
   if (inherited) {
     let found: Registration | undefined
+    let connection: Awaited<ReturnType<typeof openOwner>> | undefined
     yield* Effect.gen(function* () {
       if (inherited.expiresAt <= Date.now())
         return yield* Effect.fail(new DaemonError({ kind: "registration", message: "PTY restart handoff expired" }))
@@ -410,9 +417,20 @@ export const makeDaemonTransport = Effect.fn("PersistentPty.makeDaemonTransport"
       found = yield* discover(inherited.directory)
       if (found.instance_id !== inherited.instanceID)
         return yield* Effect.fail(new DaemonError({ kind: "registration", message: "PTY restart daemon changed" }))
+      // Authenticate and take ownership while the daemon is still where its own
+      // registration says it is. Nothing outside the profile is touched until
+      // this succeeds.
+      connection = yield* Effect.tryPromise({
+        try: (signal) => openOwner(found!, inherited!.ticket, signal),
+        catch: (cause) => failure("connect", cause),
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.seconds(5),
+          orElse: () => Effect.fail(new DaemonError({ kind: "connect", message: "PTY ownership claim timed out" })),
+        }),
+      )
       if (path.resolve(inherited.directory) !== path.resolve(root, id))
         yield* migrate(inherited.directory, path.join(root, id))
-      yield* claim(found, inherited.ticket)
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.gen(function* () {
@@ -420,11 +438,26 @@ export const makeDaemonTransport = Effect.fn("PersistentPty.makeDaemonTransport"
           yield* Effect.logWarning("Discarding PTY restart handoff; persistent terminals will start fresh", {
             cause: Cause.pretty(cause),
           })
-          if (found) yield* oneShot(found, { op: "shutdown" }).pipe(Effect.ignore)
+          // Only a daemon this process actually owned may be shut down. A failed
+          // claim proves nothing about the daemon, so it is left running.
+          if (connection !== undefined) {
+            yield* Effect.sync(() => connection?.socket.destroy())
+            if (found) yield* oneShot(found, { op: "shutdown" }).pipe(Effect.ignore)
+          }
           abandon()
         }),
       ),
     )
+    if (connection !== undefined && found !== undefined) {
+      owner = connection
+      registration = found
+      const adopted = connection
+      adopted.socket.once("close", () => {
+        if (owner !== adopted) return
+        owner = undefined
+        registration = undefined
+      })
+    }
   }
 
   return { request, requestIfRunning, shutdown, handoff, subscribe } satisfies DaemonTransport

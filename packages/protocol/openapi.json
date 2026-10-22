@@ -90,6 +90,61 @@
         "summary": "Create pairing code"
       }
     },
+    "/api/lifecycle/shutdown": {
+      "post": {
+        "tags": ["server"],
+        "operationId": "server.shutdown",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "204": {
+            "description": "<No Content>"
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Ask the managed daemon to shut down. The request must name this exact instance and process lifetime; a mismatch is refused so a stale client cannot stop a replacement process.",
+        "summary": "Stop this service instance",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShutdownInput"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
     "/auth/connect/{code}": {
       "get": {
         "tags": ["server"],
@@ -18461,6 +18516,46 @@
             "type": "integer",
             "minimum": 0
           },
+          "derivative": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "derivativeRevision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "installation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "startTime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "urls": {
             "type": "array",
             "items": {
@@ -19805,6 +19900,10 @@
             },
             "required": ["body"],
             "additionalProperties": false
+          },
+          "retryAfterMs": {
+            "type": "integer",
+            "minimum": 0
           }
         },
         "required": ["type", "message"],
@@ -20270,6 +20369,29 @@
           }
         },
         "required": ["_tag", "id", "message"],
+        "additionalProperties": false
+      },
+      "ShutdownInput": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "installation": {
+            "type": "string"
+          },
+          "startTime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["id", "installation"],
         "additionalProperties": false
       },
       "Skill.ID": {

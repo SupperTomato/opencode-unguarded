@@ -18,6 +18,8 @@ import { authorizedRequest, unauthorizedResponse } from "./middleware/authorizat
 import { withoutParentSpan } from "./request-tracing"
 import { createRoutes } from "./routes"
 import { ServerInfo } from "./server-info"
+import { ServerIdentity } from "./identity"
+import { ServerControl } from "./control"
 import { Status } from "./service-status"
 import type { ServerOptions } from "./options"
 
@@ -49,6 +51,7 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
   lifecycle?: Lifecycle<E, R>,
   transform?: Transform,
   remoteURLs?: () => ReadonlyArray<string>,
+  control: ServerControl.Interface = { available: false, shutdown: Effect.void },
 ) {
   const password = options.password
   if (!password) return yield* Effect.fail(new Error("Missing server password"))
@@ -65,7 +68,7 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
   }
   const urls = () => [...localURLs(), ...(remoteURLs?.() ?? [])]
   const application = yield* Ref.make(Option.none<App>())
-  const app = dispatch(password, status, application, options.app?.version ?? "unknown", urls, Global.Path.tmp)
+  const app = dispatch(password, status, application, options.app, urls, Global.Path.tmp)
   // Request fibers may continue inbound trace context, but must not inherit the server startup parent.
   yield* bound.http
     .serve(
@@ -101,6 +104,8 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
           password,
         },
         urls,
+        [],
+        control,
       ).pipe(Layer.provideMerge(NodeHttpServer.layerHttpServices)),
       applicationScope,
     )
@@ -174,7 +179,7 @@ function dispatch(
   password: string,
   status: Status.Interface,
   application: Ref.Ref<Option.Option<App>>,
-  version: string,
+  appInfo: ServerOptions["app"],
   urls: () => ReadonlyArray<string>,
   tmp: string,
 ): App {
@@ -187,7 +192,7 @@ function dispatch(
     const ready = state.type === "ready" && Option.isSome(app)
     if (request.method === "GET" && url.pathname === "/api/info" && !ready) {
       if (!(yield* authorizedRequest(request, auth))) return unauthorizedResponse(request)
-      return yield* infoResponse(status, version, urls, tmp)
+      return yield* infoResponse(status, appInfo, urls, tmp)
     }
     if (
       !isPairingConnectURL(url) &&
@@ -202,13 +207,15 @@ function dispatch(
 
 const infoResponse = Effect.fnUntraced(function* (
   status: Status.Interface,
-  version: string,
+  appInfo: ServerOptions["app"],
   urls: () => ReadonlyArray<string>,
   tmp: string,
 ) {
   const state = yield* status.current
+  // The identity is present before the application is ready: a client polling a
+  // slow or failed startup must be able to prove this is its own service.
   return HttpServerResponse.jsonUnsafe(
-    { version, pid: process.pid, urls: urls(), paths: { tmp } },
+    { version: appInfo?.version ?? "unknown", pid: process.pid, ...ServerIdentity.identity(appInfo), urls: urls(), paths: { tmp } },
     {
       status: state.type === "ready" ? 200 : state.type === "failed" ? 500 : 503,
       headers: state.type === "starting" || state.type === "stopping" ? { "retry-after": "1" } : undefined,

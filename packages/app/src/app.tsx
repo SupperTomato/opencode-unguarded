@@ -63,11 +63,8 @@ export function AppBaseProviders(
         <LanguageProvider locale={props.locale} onNativeTranslations={props.onNativeTranslations}>
           <UiI18nBridge>
             <ErrorBoundary
-              fallback={(error) => {
-                void import("@sentry/solid").then(({ captureException }) => captureException(error))
-
-                return <ErrorPage error={error} />
-              }}
+              // opencode-unguarded: no remote error reporting at build time.
+              fallback={(error) => <ErrorPage error={error} />}
             >
               <QueryProvider>
                 <DialogProvider>

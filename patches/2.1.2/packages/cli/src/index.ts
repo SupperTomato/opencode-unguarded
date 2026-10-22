@@ -24,6 +24,8 @@ import { Npm } from "@opencode/util/npm"
 import { EffectFlock } from "@opencode/util/effect-flock"
 import { Heap } from "./heap"
 import { CpuProfile } from "./cpu-profile"
+import { redactArguments } from "./util/redact"
+import { isReadOnlyInvocation } from "./util/redact"
 
 ensurePluginRuntime()
 
@@ -122,7 +124,7 @@ Effect.gen(function* () {
   Effect.catchCause((cause) =>
     Effect.logError("cli process failed", {
       cause,
-      args: process.argv.slice(2),
+      args: redactArguments(process.argv.slice(2)),
     }).pipe(Effect.andThen(Effect.failCause(cause))),
   ),
   Effect.annotateLogs({ role: "cli" }),
@@ -135,7 +137,7 @@ Effect.gen(function* () {
     LayerNode.compile(LayerNode.group([Global.node, AppProcess.node, Npm.node, EffectFlock.node]), {
       replacements: [
         Global.node.replace(
-          process.argv.includes("--dry-run")
+          isReadOnlyInvocation(process.argv.slice(2))
             ? Global.readOnlyLayer(
                 process.env.OPENCODE_CONFIG_DIR ? { config: process.env.OPENCODE_CONFIG_DIR } : {},
               )

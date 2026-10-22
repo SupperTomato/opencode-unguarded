@@ -72,9 +72,14 @@ exercise() {
   local home="$work/$name-home"
   local project="$work/$name-project"
   mkdir -p "$profile/data" "$profile/config/opencode" "$profile/cache" "$profile/state" "$profile/tmp" "$home" "$project"
-  # The stub model asks for this exact file. A session that never executes the
-  # read tool cannot report its contents.
-  printf 'harness tool output\n' > "$project/harness-target.txt"
+  # The stub model asks for this exact file and only accepts a tool result that
+  # echoes these contents. A session that never executes a successful read
+  # cannot report them.
+  local expected="harness-tool-output-$name-$RANDOM$RANDOM"
+  printf '%s\n' "$expected" > "$project/harness-target.txt"
+  # The shared stub reads this file per request, so each exercise has its own
+  # unpredictable expected value.
+  printf '%s' "$expected" > "$work/model.expected"
 
   # General and signal-specific endpoints: an exporter activated through either
   # environment path must be observable.
@@ -158,10 +163,11 @@ JSON
     exit 1
   fi
 
-  # Drive a real session through the CLI in front of this server, so model
-  # execution and tool handling run. `run` uses the configured local model and
-  # fails loudly if the session cannot complete.
-  (cd "$project" && env "${env[@]}" "$binary" run --standalone --auto --model harness/stub \
+  # Drive a real session in the server this harness instrumented, so model and
+  # tool execution are observed rather than run in an unrelated standalone
+  # process. The password is passed through the environment, never argv.
+  (cd "$project" && env "${env[@]}" OPENCODE_PASSWORD="$password" "$binary" run --server "$url" \
+    --auto --model harness/stub \
     "Read harness-target.txt with the read tool." >"$work/$name.session.log" 2>&1) ||
     {
       echo "$name session failed" >&2
@@ -170,7 +176,7 @@ JSON
     }
   # The stub only returns this text after it receives the tool result, so this
   # assertion proves model tool execution happened, not just a text reply.
-  if ! grep -q "harness tool output" "$work/$name.session.log"; then
+  if ! grep -q "$expected" "$work/$name.session.log"; then
     echo "$name session did not execute the read tool" >&2
     cat "$work/$name.session.log" >&2
     exit 1
@@ -199,7 +205,7 @@ wait_for_hits() {
 }
 
 start_model() {
-  PORTFILE="$work/model.port" bun "$script_dir/model-stub.ts" >"$work/model.log" 2>&1 &
+  PORTFILE="$work/model.port" EXPECTED_FILE="$work/model.expected" bun "$script_dir/model-stub.ts" >"$work/model.log" 2>&1 &
   models+=("$!")
   for _ in $(seq 1 100); do
     [ -f "$work/model.port" ] && return 0

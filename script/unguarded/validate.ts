@@ -13,7 +13,15 @@
 
 import fs from "node:fs"
 import path from "node:path"
-import { apply, loadManifest, repoRoot, sha256, verify, verifyUpstreamIdentity } from "./apply"
+import {
+  apply,
+  loadManifest,
+  repoRoot,
+  sha256,
+  verify,
+  verifyUpstreamIdentity,
+  verifyWorktreeIdentity,
+} from "./apply"
 import { verifyTelemetryBinary, verifyTelemetrySource } from "./telemetry"
 import { verifyLifecycle } from "./lifecycle"
 
@@ -46,10 +54,15 @@ function blocked(id: string, detail: string) {
   results.push({ id, status: "blocked", detail })
 }
 
+const worktree = args.includes("--verify-worktree")
+
 check("A1-patched-tree", () => {
-  const errors = verify(root, manifest)
+  const errors = [...verify(root, manifest), ...(worktree ? verifyWorktreeIdentity(root, manifest) : [])]
   if (errors.length > 0) throw new Error(errors.join("; "))
-  return `${manifest.files.length} patched files and ${manifest.protected.length} protected files verified`
+  return (
+    `${manifest.files.length} patched files and ${manifest.protected.length} protected files verified` +
+    (worktree ? " with no undeclared worktree changes" : "")
+  )
 })
 
 check("A2-lifecycle", () => {

@@ -42,3 +42,6 @@ tsconfig.tsbuildinfo
 opencode-src/
 package/
 *.tar.gz
+
+# Bun test cache created by derivative runs
+packages/util/bun/

@@ -7,6 +7,8 @@ import { ClientApi } from "../../contract"
 import type {
   ServerInfoOutput,
   ServerPairOutput,
+  ServerShutdownInput,
+  ServerShutdownOutput,
   ServerConnectInput,
   ServerConnectOutput,
   LocationGetInput,
@@ -309,6 +311,13 @@ const EndpointServerInfo = (raw: RawClient["server.server"]) => () =>
 const EndpointServerPair = (raw: RawClient["server.server"]) => () =>
   preserveEffect<ServerPairOutput>()(raw["server.pair"]({}).pipe(Effect.mapError(mapClientError)))
 
+const EndpointServerShutdown = (raw: RawClient["server.server"]) => (input: ServerShutdownInput) =>
+  preserveEffect<ServerShutdownOutput>()(
+    raw["server.shutdown"]({
+      payload: { id: input["id"], installation: input["installation"], startTime: input["startTime"] },
+    }).pipe(Effect.mapError(mapClientError)),
+  )
+
 const EndpointServerConnect = (raw: RawClient["server.server"]) => (input: ServerConnectInput) =>
   preserveEffect<ServerConnectOutput>()(
     raw["server.connect"]({ params: { code: input["code"] } }).pipe(Effect.mapError(mapClientError)),
@@ -317,6 +326,7 @@ const EndpointServerConnect = (raw: RawClient["server.server"]) => (input: Serve
 const adaptGroupServer = (raw: RawClient["server.server"]) => ({
   info: EndpointServerInfo(raw),
   pair: EndpointServerPair(raw),
+  shutdown: EndpointServerShutdown(raw),
   connect: EndpointServerConnect(raw),
 })
 

@@ -2,10 +2,11 @@ export * as ServiceRegistration from "./service-registration"
 
 import { Service, type Info } from "@opencode/client/effect/service"
 import path from "node:path"
-import { Effect, FileSystem, Schedule, Schema } from "effect"
+import { Effect, FileSystem, Option, Schedule, Schema } from "effect"
 import { HttpServer } from "effect/http"
 import { NetAddress } from "effect/net"
-import { OPENCODE_VERSION, UNGUARDED } from "../version"
+import { OPENCODE_VERSION, UNGUARDED, UNGUARDED_IDENTITY } from "../version"
+import { installationIdentity } from "./installation"
 
 const infoJson = Schema.fromJsonString(Service.Info)
 const encodeInfo = Schema.encodeEffect(infoJson)
@@ -56,6 +57,16 @@ export const register = Effect.fnUntraced(function* (options: {
     found.url === info.url &&
     found.pid === info.pid &&
     found.password === info.password
+
+  // opencode-unguarded: publishing a registration displaces whoever is named
+  // there. Before overwriting, prove the existing record is ours to replace: a
+  // live foreign owner must not be evicted by a second installation that
+  // happens to share the profile. A stale record may be reclaimed only when it
+  // names this installation (or is unreadable debris from no live owner).
+  const displacement = yield* displacesOwner(fs, options.file, info)
+  if (displacement !== undefined)
+    return yield* Effect.fail(new Error(displacement))
+
   yield* fs.writeFileString(temp, encoded, { mode: 0o600 }).pipe(Effect.andThen(fs.rename(temp, options.file)))
   yield* current.pipe(
     Effect.catchCause((cause) =>
@@ -90,3 +101,47 @@ export const register = Effect.fnUntraced(function* (options: {
     Effect.ignore,
   )
 })
+
+/**
+ * Why publishing this registration would displace another live owner, if it
+ * would.
+ *
+ * Reading the record and then renaming over it is not atomic, but the check is
+ * enough to stop the ordinary case: a second installation starting against a
+ * shared profile sees a live record that is not its own and refuses, instead of
+ * overwriting it and relying on the incumbent's monitor to shut itself down.
+ * Only the derivative enforces this; stock keeps upstream replacement behavior.
+ */
+const displacesOwner = (fs: FileSystem.FileSystem, file: string, info: Record<string, unknown>) =>
+  Effect.gen(function* () {
+    if (!UNGUARDED) return undefined
+    const text = yield* fs.readFileString(file).pipe(Effect.option)
+    if (text._tag === "None") return undefined
+    const decoded = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Service.Info))(text.value).pipe(
+      Effect.option,
+    )
+    if (Option.isNone(decoded)) return undefined
+    const found = decoded.value
+    if (found.pid === process.pid) return undefined
+    const ours =
+      found.derivative === UNGUARDED_IDENTITY.name &&
+      found.derivativeRevision === UNGUARDED_IDENTITY.revision &&
+      found.installation === installationIdentity().id
+    if (ours) return undefined
+    // A record from this installation that is no longer running is stale and
+    // may be replaced. Anything else is someone else's live service.
+    const alive = yield* Effect.sync(() => {
+      try {
+        process.kill(found.pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    })
+    if (!alive) return undefined
+    return (
+      `refusing to replace the service registration at ${file}: it belongs to ` +
+      `${found.installation === undefined ? "another OpenCode instance" : "a different installation"} ` +
+      `(pid ${found.pid}). Stop that service, or use a separate profile.`
+    )
+  })

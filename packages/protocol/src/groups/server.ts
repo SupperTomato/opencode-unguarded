@@ -1,6 +1,6 @@
 import { Schema } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
-import { UnauthorizedError } from "../errors.js"
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
+import { ConflictError, UnauthorizedError } from "../errors.js"
 
 export const ServerInfo = Schema.Struct({
   version: Schema.String,
@@ -26,6 +26,17 @@ export const ServerInfo = Schema.Struct({
   ),
 }).annotate({ identifier: "ServerInfo" })
 export type ServerInfo = typeof ServerInfo.Type
+
+// opencode-unguarded: authenticated lifecycle control for the managed daemon.
+// The request names the exact service instance and process lifetime the caller
+// observed, so a stale registration or reused PID cannot stop a different
+// process. Stock servers do not expose this endpoint.
+export const ShutdownInput = Schema.Struct({
+  id: Schema.String,
+  installation: Schema.String,
+  startTime: Schema.optional(Schema.String),
+}).annotate({ identifier: "ShutdownInput" })
+export type ShutdownInput = typeof ShutdownInput.Type
 
 export const PairingCode = Schema.Struct({
   code: Schema.String,
@@ -66,6 +77,20 @@ export const ServerGroup = HttpApiGroup.make("server.server")
         identifier: "server.pair",
         summary: "Create pairing code",
         description: "Create a short-lived, single-use code for a /auth/connect/:code pairing link.",
+      }),
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post("server.shutdown", "/api/lifecycle/shutdown", {
+      payload: ShutdownInput,
+      success: HttpApiSchema.NoContent,
+      error: [ConflictError],
+    }).annotateMerge(
+      OpenApi.annotations({
+        identifier: "server.shutdown",
+        summary: "Stop this service instance",
+        description:
+          "Ask the managed daemon to shut down. The request must name this exact instance and process lifetime; a mismatch is refused so a stale client cannot stop a replacement process.",
       }),
     ),
   )

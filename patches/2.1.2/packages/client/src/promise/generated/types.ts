@@ -2682,6 +2682,14 @@ export type UnauthorizedError = { readonly _tag: "UnauthorizedError"; readonly m
 export const isUnauthorizedError = (value: unknown): value is UnauthorizedError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "UnauthorizedError"
 
+export type ConflictError = {
+  readonly _tag: "ConflictError"
+  readonly message: string
+  readonly resource?: string | undefined
+}
+export const isConflictError = (value: unknown): value is ConflictError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ConflictError"
+
 export type LocationNotFoundError = {
   readonly _tag: "LocationNotFoundError"
   readonly location: { readonly directory: string }
@@ -2717,14 +2725,6 @@ export type SessionNotFoundError = {
 }
 export const isSessionNotFoundError = (value: unknown): value is SessionNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "SessionNotFoundError"
-
-export type ConflictError = {
-  readonly _tag: "ConflictError"
-  readonly message: string
-  readonly resource?: string | undefined
-}
-export const isConflictError = (value: unknown): value is ConflictError =>
-  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ConflictError"
 
 export type UnknownError = {
   readonly _tag: "UnknownError"
@@ -2926,6 +2926,22 @@ export const isVcsInitNotSupportedError = (value: unknown): value is VcsInitNotS
 export type ServerInfoOutput = ServerInfo
 
 export type ServerPairOutput = PairingCode
+
+export type ServerShutdownInput = {
+  readonly id: { readonly id: string; readonly installation: string; readonly startTime?: string | undefined }["id"]
+  readonly installation: {
+    readonly id: string
+    readonly installation: string
+    readonly startTime?: string | undefined
+  }["installation"]
+  readonly startTime?: {
+    readonly id: string
+    readonly installation: string
+    readonly startTime?: string | undefined
+  }["startTime"]
+}
+
+export type ServerShutdownOutput = void
 
 export type ServerConnectInput = { readonly code: { readonly code: string }["code"] }
 

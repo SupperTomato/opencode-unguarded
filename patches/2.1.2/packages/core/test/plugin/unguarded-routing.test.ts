@@ -153,11 +153,23 @@ describe("derivative prompt routing through production hooks", () => {
 
   it.effect("applies the same routing to the compaction and generate hooks", () =>
     Effect.gen(function* () {
+      const catalog = yield* Provider.Service
       const hooks = yield* registerAll
+      yield* catalog.transform((editor) =>
+        editor.models.update(Provider.ID.make("test"), Model.ID.make("gpt-5"), () => {}),
+      )
       for (const hook of ["compaction", "generate"] as const) {
         const current = event("gpt-5")
         yield* hooks.trigger("session", hook, current)
-        expect({ hook, directive: count(current.system[0]?.text ?? "") }).toEqual({ hook, directive: 1 })
+        const text = current.system[0]?.text ?? ""
+        // The assertion must fail if the hook stops routing, so it checks the
+        // reviewed template's content, not merely that the input already
+        // contained the directive.
+        expect({ hook, directive: count(text) }).toEqual({ hook, directive: 1 })
+        expect({ hook, template: text.includes("Never run destructive commands such as") }).toEqual({
+          hook,
+          template: true,
+        })
       }
     }),
   )

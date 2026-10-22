@@ -117,6 +117,10 @@ jobs:
           # The binary gates run after the build; here only source gates must pass.
           bun script/unguarded/validate.ts --version "$VERSION" --root opencode-src --upstream .check/pristine
 
+      - name: Verify generated artifacts are current
+        working-directory: opencode-src/packages/protocol
+        run: bun run check:generated
+
       - name: Verify no unintended source drift
         run: |
           git -C opencode-src diff --check
@@ -140,26 +144,15 @@ jobs:
 
       - name: Canonical repository check
         working-directory: opencode-src
-        # The release source is the tree that becomes the binary, so it gets the
-        # same canonical lint and typecheck the repository requires. Re-running
-        # the frozen install first repairs a partially linked dependency tree
-        # (for example a workspace whose hoisted tsconfig did not link), which
-        # would otherwise fail an unrelated package.
+        # The release source is the tree that becomes the binary, so it runs the
+        # same canonical check the repository requires. If this fails, the run
+        # reports the exact failing task rather than substituting a narrower
+        # gate.
         env:
           TURBO_CONCURRENCY: "1"
         run: |
           bun install --frozen-lockfile
-          # Canonical lint and typecheck for every package that ships in, or is
-          # built alongside, the CLI. The two Astro documentation services are
-          # excluded because their `astro sync` cannot resolve the hoisted
-          # @tsconfig/bun in this job's fresh install. They are static sites,
-          # are not part of the packaged binary, and fail identically on the
-          # unpatched pin, so excluding them does not weaken the release gate.
-          # The full `bun run check` still runs on the derivative checkout in
-          # check.yml.
-          bun run lint
-          bun turbo typecheck --concurrency=1 \
-            --filter='!@opencode/www' --filter='!@opencode/posts'
+          bun run check
 
       - name: Run derivative tooling tests
         env:
@@ -185,14 +178,16 @@ jobs:
             packages/cli/test/fixture/unguarded-service.ts \
             packages/client/test/unguarded-ownership.test.ts \
             packages/client/test/unguarded-termination.test.ts \
-            packages/util/test/unguarded-roots.test.ts; do
+            packages/cli/test/unguarded-redact.test.ts \
+            packages/util/test/unguarded-roots.test.ts \
+            packages/util/test/unguarded-direct-roots.test.ts; do
             cp "$DERIVATIVE_ROOT/$file" "opencode-src/$file"
             test -s "opencode-src/$file" || { echo "missing derivative test file: $file" >&2; exit 1; }
           done
 
       - name: Run affected upstream suites
         working-directory: opencode-src/packages/cli
-        run: bun test --timeout 30000 test/upgrade.test.ts test/unguarded-updater.test.ts test/unguarded-service.test.ts test/unguarded-database.test.ts test/debug-paths.test.ts test/service-lifecycle.test.ts
+        run: bun test --timeout 30000 test/upgrade.test.ts test/unguarded-updater.test.ts test/unguarded-service.test.ts test/unguarded-database.test.ts test/debug-paths.test.ts test/service-lifecycle.test.ts test/unguarded-redact.test.ts
 
       - name: Run affected client suites
         working-directory: opencode-src/packages/client
@@ -201,7 +196,7 @@ jobs:
 
       - name: Run affected util derivatives
         working-directory: opencode-src/packages/util
-        run: bun test test/unguarded-roots.test.ts test/observability-otlp.test.ts
+        run: bun test test/unguarded-roots.test.ts test/unguarded-direct-roots.test.ts test/observability-otlp.test.ts
 
       - name: Run affected core suites
         working-directory: opencode-src/packages/core

@@ -77,17 +77,67 @@ canonical_allow_missing() {
 }
 
 profile_real="$(canonical_allow_missing "$profile")"
-case "$profile_real" in
-  "$HOME/.local/share/opencode"|"$HOME/.local/share/opencode/"*)
-    die "refusing a profile inside the stock OpenCode data directory: $profile_real" ;;
-  "$HOME/.config/opencode"|"$HOME/.config/opencode/"*)
-    die "refusing a profile inside the stock OpenCode config directory: $profile_real" ;;
-  "$HOME/.cache/opencode"|"$HOME/.cache/opencode/"*)
-    die "refusing a profile inside the stock OpenCode cache directory: $profile_real" ;;
-  "$HOME/.local/state/opencode"|"$HOME/.local/state/opencode/"*)
-    die "refusing a profile inside the stock OpenCode state directory: $profile_real" ;;
-  /) die "refusing the filesystem root as a profile" ;;
-esac
+[ "$profile_real" = "/" ] && die "refusing the filesystem root as a profile"
+
+# Stock storage that is actually in use, not only the conventional defaults.
+stock_roots() {
+  printf '%s\n' \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/opencode" \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/opencode" \
+    "${XDG_CACHE_HOME:-$HOME/.cache}/opencode" \
+    "${XDG_STATE_HOME:-$HOME/.local/state}/opencode" \
+    "$HOME/.local/share/opencode" \
+    "$HOME/.config/opencode" \
+    "$HOME/.cache/opencode" \
+    "$HOME/.local/state/opencode"
+}
+
+overlaps() {
+  case "$1" in
+    "$2"|"$2"/*) return 0 ;;
+  esac
+  case "$2" in
+    "$1"/*) return 0 ;;
+  esac
+  return 1
+}
+
+for stock in $(stock_roots); do
+  stock_real="$(canonical_allow_missing "$stock")"
+  if overlaps "$profile_real" "$stock" || overlaps "$profile_real" "$stock_real"; then
+    die "refusing a profile overlapping stock OpenCode storage: $profile_real"
+  fi
+done
+
+# Reject a symlink on any existing component between the profile and the
+# application directories. `-L` catches a dangling link, which `-d` would miss.
+assert_no_links() {
+  local base="$1" relative="$2" current="$1" part kinds="$3"
+  IFS='/' read -r -a parts <<<"$relative"
+  local index=0 total=${#parts[@]}
+  for part in "${parts[@]}"; do
+    index=$((index + 1))
+    [ -n "$part" ] || continue
+    current="$current/$part"
+    if [ -L "$current" ]; then
+      if [ "$index" -eq 1 ]; then
+        die "refusing symlinked profile storage: $current -> $(readlink "$current")"
+      fi
+      die "refusing symlinked application directory: $current -> $(readlink "$current")"
+    fi
+    if [ -e "$current" ] && [ ! -d "$current" ]; then
+      die "refusing a non-directory in the storage path: $current"
+    fi
+    if [ ! -e "$current" ]; then
+      return 0
+    fi
+  done
+}
+
+for name in data config cache state tmp; do
+  assert_no_links "$profile_real" "$name" "profile"
+  assert_no_links "$profile_real" "$name/opencode" "application"
+done
 
 if [ "$dry" -eq 0 ]; then
   mkdir -p "$profile_real/data" "$profile_real/config" "$profile_real/cache" "$profile_real/state" "$profile_real/tmp"
@@ -105,14 +155,8 @@ for name in data config cache state tmp; do
   fi
 done
 
-# The runtime appends `opencode` below each XDG root. Those directories, not
-# just the roots, are what configuration, state, cache, and the database
-# actually use, so a symlink there would still escape the profile.
 for name in data config cache state tmp; do
   appdir="$profile_real/$name/opencode"
-  if [ -L "$appdir" ]; then
-    die "refusing symlinked application directory: $name/opencode -> $(readlink "$appdir")"
-  fi
   if [ "$dry" -eq 0 ]; then
     mkdir -p "$appdir"
     resolved="$(cd -P "$appdir" && pwd)"
@@ -124,17 +168,46 @@ done
 
 # The database must stay inside the profile data directory. This is checked for
 # the default filename too, because a symlinked default would silently redirect
-# SQLite writes outside the profile.
+# SQLite writes outside the profile. SQLite creates `-wal`, `-shm`, and possibly
+# `-journal` beside the database, so those are checked as well.
 data_real="$profile_real/data/opencode"
 database="${OPENCODE_DB:-opencode-unguarded.db}"
 if [ "$database" != ":memory:" ]; then
-  [ ! -L "$data_real/$database" ] || die "refusing a symlinked database: $data_real/$database"
+  for suffix in "" -wal -shm -journal; do
+    target="$data_real/$database$suffix"
+    [ ! -L "$target" ] || die "refusing a symlinked database file: $target -> $(readlink "$target")"
+    if [ -e "$target" ] && [ ! -f "$target" ]; then
+      die "refusing a non-file database path: $target"
+    fi
+    if [ -f "$target" ]; then
+      links="$(stat -c '%h' "$target" 2>/dev/null || echo 1)"
+      [ "$links" = "1" ] || die "refusing a hard-linked database file: $target"
+    fi
+  done
   db_real="$(canonical_allow_missing "$data_real/$database")"
   case "$db_real" in
     "$data_real"/*) ;;
     *) die "refusing a database outside the derivative data directory: $db_real" ;;
   esac
 fi
+
+# An application directory being real does not make its children safe: a
+# symlinked log directory, config file, credential file, or service record would
+# still redirect an application write into stock storage.
+assert_no_linked_children() {
+  local directory="$1" entry
+  [ -d "$directory" ] || return 0
+  for entry in "$directory"/* "$directory"/.[!.]*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    if [ -L "$entry" ]; then
+      die "refusing symlinked application storage: $entry -> $(readlink "$entry")"
+    fi
+  done
+}
+
+for name in data config cache state; do
+  assert_no_linked_children "$profile_real/$name/opencode"
+done
 
 export OPENCODE_UNGUARDED_PROFILE="$profile_real"
 export OPENCODE_UNGUARDED_ROOT="$root"

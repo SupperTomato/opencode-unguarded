@@ -1,6 +1,8 @@
 import type {
   ServerInfoOutput,
   ServerPairOutput,
+  ServerShutdownInput,
+  ServerShutdownOutput,
   ServerConnectInput,
   ServerConnectOutput,
   LocationGetInput,
@@ -434,6 +436,18 @@ export function make(options: ClientOptions) {
       pair: (requestOptions?: RequestOptions) =>
         request<ServerPairOutput>(
           { method: "POST", path: `/api/pair`, successStatus: 200, declaredStatuses: [400, 401], empty: false },
+          requestOptions,
+        ),
+      shutdown: (input: ServerShutdownInput, requestOptions?: RequestOptions) =>
+        request<ServerShutdownOutput>(
+          {
+            method: "POST",
+            path: `/api/lifecycle/shutdown`,
+            body: { id: input["id"], installation: input["installation"], startTime: input["startTime"] },
+            successStatus: 204,
+            declaredStatuses: [400, 401, 409],
+            empty: true,
+          },
           requestOptions,
         ),
       connect: (input: ServerConnectInput, requestOptions?: RequestOptions) =>

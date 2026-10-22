@@ -155,16 +155,57 @@ const paths = Effect.gen(function* () {
   }
 })
 
+/**
+ * Refuse saved environment settings that would undo startup validation.
+ *
+ * `config.env` is applied to the service process after the CLI has validated the
+ * profile, config location, database, and server attachment. A saved value could
+ * otherwise reintroduce exactly the overrides those checks reject, or replace
+ * the terminal-handoff record with one pointing outside the profile. Provider
+ * credentials and ordinary tool settings are unaffected.
+ */
+const REFUSED_ENV = new Set([
+  "OPENCODE_UNGUARDED_PROFILE",
+  "OPENCODE_UNGUARDED_ROOT",
+  "OPENCODE_CONFIG_DIR",
+  "OPENCODE_CONFIG",
+  "OPENCODE_CONFIG_CONTENT",
+  "OPENCODE_TEST_HOME",
+  "OPENCODE_DB",
+  "OPENCODE_PTY_HANDOFF",
+  "OPENCODE_SERVER_URL",
+  "OPENCODE_SERVER",
+  "XDG_DATA_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_STATE_HOME",
+  "TMPDIR",
+])
+
+export function assertSavedEnvironment(env: Readonly<Record<string, string>> | undefined) {
+  if (env === undefined || !UNGUARDED) return
+  for (const name of Object.keys(env)) {
+    if (REFUSED_ENV.has(name))
+      throw new Error(
+        `refusing saved service environment ${name}: it would redirect this profile. ` +
+          `Unset it with \`opencode service unset env ${name}\`.`,
+      )
+  }
+}
+
 export const options = Effect.fnUntraced(function* (input: { readonly checkVersion?: boolean } = {}) {
   const { file, legacyRegistrationFiles } = yield* paths
   yield* Effect.forEach(legacyRegistrationFiles, (legacy) => migrateRegistration(legacy, file))
+  const env = (yield* read()).env
+  // Reject a saved override before anyone spawns or stops a service with it.
+  assertSavedEnvironment(env)
   return {
     file,
     version: input.checkVersion ? OPENCODE_VERSION : undefined,
     // opencode-unguarded: the caller's own installation identity, so discovery,
     // reuse, and stopping are bound to the installation running this client.
     ...(UNGUARDED ? { installation: Installation.installationIdentity().id } : {}),
-    env: (yield* read()).env,
+    env,
     command: [
       ...selfCommand(),
       "serve",

@@ -22,6 +22,10 @@ function makeArchive(
   const stage = path.join(work, "package", "opencode-unguarded")
   fs.mkdirSync(path.join(stage, "bin"), { recursive: true })
   fs.mkdirSync(path.join(stage, "libexec"), { recursive: true })
+  // The installer validates the complete package layout before activation.
+  for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.md", "acceptance.sh", "collector.ts", "install.sh", "model-stub.ts", "telemetry-harness.sh", "uninstall.sh"]) {
+    fs.writeFileSync(path.join(stage, file), `# ${file}\n`)
+  }
   fs.writeFileSync(
     path.join(stage, "libexec", "opencode"),
     `#!${process.execPath}
@@ -29,8 +33,9 @@ const fs = require("node:fs")
 const path = require("node:path")
 const args = process.argv.slice(2)
 if (args[0] === "uninstall") {
-  // Emulate the derivative CLI removal contract: remove the owned installation,
-  // keep profile data, and remove only a link that points at this launcher.
+  // Stand-in for the real CLI. These cases exercise the shell wrapper's
+  // delegation and refusal contract, not production removal logic, which the
+  // packaged acceptance test drives against the real executable.
   const root = process.env.OPENCODE_UNGUARDED_ROOT
   if (!root) { console.error("refusing to uninstall without a verified installation root"); process.exit(1) }
   const link = path.join(process.env.HOME, ".local/bin/opencode-unguarded")
@@ -286,7 +291,10 @@ describe("candidate installation", () => {
   })
 })
 
-describe("candidate uninstall", () => {
+// These exercise the shell wrapper's delegation and refusal behavior against a
+// test double. Real removal is covered by `acceptance.sh` on the packaged
+// executable, including the refusals a double cannot model.
+describe("candidate uninstall wrapper", () => {
   test("removes the installation and keeps profile data", () => {
     const fixture = makeArchive()
     expect(run(install, ["--archive", fixture.archive, "--prefix", fixture.prefix], { HOME: fixture.home }).exitCode).toBe(0)

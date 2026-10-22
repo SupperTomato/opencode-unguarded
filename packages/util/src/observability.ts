@@ -14,6 +14,16 @@ export const Options = Schema.Struct({
 })
 export type Options = typeof Options.Type
 
+/** Whether these arguments are the read-only `uninstall --dry-run` preview. */
+function dryRunUninstall(args: ReadonlyArray<string>) {
+  const words: string[] = []
+  for (const arg of args) {
+    if (arg.startsWith("-")) break
+    words.push(arg)
+  }
+  return words[0] === "uninstall" && args.includes("--dry-run")
+}
+
 export function layer(
   options: Options = {
     endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
@@ -25,10 +35,12 @@ export function layer(
     version: options.version ?? "unknown",
     channel: options.channel ?? "local",
   }
-  // opencode-unguarded: `--dry-run` promises the filesystem is unchanged, so it
-  // uses only the stderr logger: opening the shared log file would create the
-  // log directory and append to a file.
-  const loggers = process.argv.includes("--dry-run")
+  // opencode-unguarded: the uninstall preview promises the filesystem is
+  // unchanged, so it uses only the stderr logger: opening the shared log file
+  // would create the log directory and append to a file. The operation is
+  // matched, not just the flag, so a prompt that happens to contain the text
+  // does not silently change logging.
+  const loggers = dryRunUninstall(process.argv.slice(2))
     ? [Logging.stderrLogger]
     : Logging.loggers(app.channel === "local", app.channel)
   const local = Logger.layer(loggers, { mergeWithExisting: false }).pipe(

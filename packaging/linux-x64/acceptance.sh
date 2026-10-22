@@ -124,7 +124,9 @@ pass "live service identity matches the registration"
 # --- session ------------------------------------------------------------------
 pass "running a session against a packaged install"
 model_port_file="$work/model.port"
-PORTFILE="$model_port_file" bun "$script_dir/model-stub.ts" >"$work/model.log" 2>&1 &
+expected="harness-tool-output-$RANDOM$RANDOM"
+printf '%s' "$expected" >"$work/model.expected"
+PORTFILE="$model_port_file" EXPECTED_FILE="$work/model.expected" bun "$script_dir/model-stub.ts" >"$work/model.log" 2>&1 &
 model=$!
 for _ in $(seq 1 100); do
   [ -f "$model_port_file" ] && break
@@ -137,13 +139,69 @@ jq -n --arg url "http://127.0.0.1:$model_port/v1" \
   '{providers:{harness:{package:"@opencode/ai/providers/openai-compatible",name:"Harness",
     settings:{baseURL:$url,apiKey:"harness"},models:{stub:{name:"Stub"}}}}}' \
   >"$HOME/.local/share/opencode-unguarded/profile/config/opencode/opencode.json"
-printf 'harness tool output\n' >"$work/project/harness-target.txt"
-(cd "$work/project" && OPENCODE_DISABLE_MODELS_FETCH=1 "$command" run --standalone --auto \
-  --model harness/stub "Read harness-target.txt with the read tool." >"$work/session.log" 2>&1) ||
+printf '%s\n' "$expected" >"$work/project/harness-target.txt"
+# The session uses the managed daemon discovered from the registration this
+# install wrote, so managed attachment is exercised rather than bypassed.
+url="$(jq -r .url "$registration")"
+password="$(jq -r .password "$registration")"
+(cd "$work/project" && OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_PASSWORD="$password" \
+  "$command" run --server "$url" --auto --model harness/stub \
+  "Read harness-target.txt with the read tool." >"$work/session.log" 2>&1) ||
   { cat "$work/session.log" >&2; fail "session did not complete"; }
-grep -q "harness tool output" "$work/session.log" ||
+grep -q "$expected" "$work/session.log" ||
   { cat "$work/session.log" >&2; fail "session did not execute the read tool"; }
-pass "session completed with a packaged install and a real tool call"
+pass "managed session completed with a packaged install and a real tool call"
+
+# --- negative lifecycle and removal cases ------------------------------------
+pass "checking refusals preserve the installation and profile"
+# A second installation sharing the same profile must not be able to stop the
+# first one's service.
+other="$work/other-home"
+mkdir -p "$other"
+HOME="$other" OPENCODE_UNGUARDED_PROFILE="$profile" "$package/install.sh" --archive "$archive" --no-link \
+  >"$work/other-install.log" 2>&1 ||
+  { cat "$work/other-install.log" >&2; fail "second installation failed"; }
+# Same profile, different installation: this must not be able to stop the
+# daemon the first installation owns.
+if HOME="$other" OPENCODE_UNGUARDED_PROFILE="$profile" \
+  "$other/.local/opt/opencode-unguarded/bin/opencode-unguarded" service stop >"$work/cross.log" 2>&1; then
+  fail "another installation stopped this profile's service"
+fi
+grep -qi "installation\|refus" "$work/cross.log" ||
+  { cat "$work/cross.log" >&2; fail "cross-installation refusal was not explained"; }
+kill -0 "$server" 2>/dev/null || fail "the original service died during the cross-installation attempt"
+jq -e --arg id "$(jq -r .installationId "$prefix/BUILD-INFO.json")" '.installation == $id' "$registration" >/dev/null ||
+  fail "the original registration was replaced"
+pass "cross-installation stop was refused and the owner survived"
+
+# A malformed registration must stop removal rather than being read as "no service".
+cp "$registration" "$work/registration.backup"
+jq '.password = 123' "$work/registration.backup" >"$registration"
+if "$command" uninstall --force >"$work/badreg.log" 2>&1; then
+  fail "uninstall accepted an invalid registration"
+fi
+[ -d "$prefix" ] || fail "uninstall removed the program after refusing a bad registration"
+cp "$work/registration.backup" "$registration"
+pass "malformed registration refused removal"
+
+# Tampered metadata must refuse removal.
+cp "$prefix/BUILD-INFO.json" "$work/build-info.backup"
+jq '.executableSha256 = ("0" * 64)' "$work/build-info.backup" >"$prefix/BUILD-INFO.json"
+if "$command" uninstall --force >"$work/tampered.log" 2>&1; then
+  fail "uninstall accepted tampered metadata"
+fi
+[ -x "$prefix/libexec/opencode" ] || fail "uninstall removed a tampered installation"
+cp "$work/build-info.backup" "$prefix/BUILD-INFO.json"
+pass "tampered executable hash refused removal"
+
+# An unowned file inside the installation must stop recursive removal.
+echo keep >"$prefix/unrelated.txt"
+if "$command" uninstall --force >"$work/unowned.log" 2>&1; then
+  fail "uninstall deleted an installation containing unrelated files"
+fi
+[ -f "$prefix/unrelated.txt" ] || fail "unrelated file was deleted"
+rm -f "$prefix/unrelated.txt"
+pass "unrelated installation contents preserved"
 
 # --- uninstall ----------------------------------------------------------------
 pass "uninstalling while the service is running"

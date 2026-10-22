@@ -393,6 +393,90 @@ export function verifyUpstreamIdentity(root: string, manifest: Manifest, options
   return true
 }
 
+/**
+ * Verify that the checkout's working tree contains only the approved change set.
+ *
+ * Git metadata alone describes commits, not the bytes on disk. At the pinned
+ * HEAD, `verifyUpstreamIdentity` proves which commit is checked out but says
+ * nothing about a modified, staged, or added file sitting in the worktree. This
+ * compares the tree's tracked state with the manifest and rejects every
+ * undeclared path.
+ *
+ * Allowed difference is exactly:
+ *  - the manifest's own files (modified, or added where `pristine` is null)
+ *  - dependency directories, build output, and the release's own staging paths
+ *
+ * The check is read-only: it runs `git status` and never writes an index entry.
+ */
+export function verifyWorktreeIdentity(
+  root: string,
+  manifest: Manifest,
+  baseline: string = manifest.upstream.commit,
+) {
+  const metadata = gitMetadata(root)
+  if (metadata === undefined)
+    return [`no Git metadata at ${root}: a worktree cannot prove it has no undeclared changes`]
+  if (typeof Bun === "undefined") return ["Git verification requires Bun"]
+
+  // Compare the worktree with the pinned commit, not with HEAD: the derivative
+  // repository's own history legitimately contains the manifest's bytes, while
+  // the assembled tree starts at the pin. Disabling rename detection keeps the
+  // path list unambiguous.
+  const diff = Bun.spawnSync(
+    [
+      "git",
+      `--git-dir=${metadata.gitDir}`,
+      `--work-tree=${root}`,
+      "diff",
+      "--name-only",
+      "--no-renames",
+      baseline,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  )
+  if (diff.exitCode !== 0) return [`git diff failed in ${root}: ${diff.stderr.toString().trim()}`]
+  const untracked = Bun.spawnSync(
+    ["git", `--git-dir=${metadata.gitDir}`, `--work-tree=${root}`, "ls-files", "--others", "--exclude-standard"],
+    { stdout: "pipe", stderr: "pipe" },
+  )
+  if (untracked.exitCode !== 0)
+    return [`git ls-files failed in ${root}: ${untracked.stderr.toString().trim()}`]
+
+  const allowed = new Set(manifest.files.map((entry) => entry.file))
+  const errors: string[] = []
+  for (const entry of [
+    ...diff.stdout.toString().split("\n"),
+    ...untracked.stdout.toString().split("\n"),
+  ]) {
+    const file = entry.trim()
+    if (file.length === 0) continue
+    if (allowed.has(file)) continue
+    if (ignoredPath(file)) continue
+    errors.push(`${file}: undeclared change in the worktree`)
+  }
+  return [...new Set(errors)]
+}
+
+/** Paths that are build output or dependencies, not source identity. */
+function ignoredPath(file: string) {
+  const parts = file.split("/")
+  return parts.some((part) => part === "node_modules" || part === "dist" || part === ".turbo" || part === "package")
+}
+
+/** Parse NUL-separated `git status --porcelain=v1 -z` into changed paths. */
+function parseStatus(output: string) {
+  const fields = output.split("\0").filter((value) => value.length > 0)
+  const paths: string[] = []
+  for (let index = 0; index < fields.length; index++) {
+    const field = fields[index]!
+    // Rename and copy entries carry the original path as the next field.
+    if (field.startsWith("R ") || field.startsWith("C ")) index++
+    const path = field.slice(3)
+    if (path.length > 0) paths.push(path)
+  }
+  return paths
+}
+
 type GitMetadata = { readonly gitDir: string; readonly head: string | undefined }
 
 /** Read Git metadata, following a worktree `.git` file. */

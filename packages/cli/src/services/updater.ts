@@ -392,7 +392,9 @@ const make = Effect.gen(function* () {
   const latest = Effect.fnUntraced(function* (selected?: Method) {
     if (UNGUARDED) return yield* Effect.fail(derivativeUpdateError())
     const detected = selected ?? (yield* method())
-    if (!detected) return yield* Effect.fail(derivativeUpdateError())
+    // An unrecognized installation method still has an upstream release source.
+    // Only derivative builds redirect this path to their own releases.
+    if (detected === undefined) return (yield* release()).version
     if (detected === "winget") return yield* wingetVersion()
     const data = yield* release(detected)
     return data.version

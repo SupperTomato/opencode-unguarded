@@ -47,6 +47,7 @@ import { layer } from "./location"
 import { formLocationLayer } from "./middleware/form-location"
 import { sessionLocationLayer } from "./middleware/session-location"
 import { ServerInfo } from "./server-info"
+import { ServerControl } from "./control"
 import type { ServerOptions } from "./options"
 
 const applicationServiceNodes = [
@@ -82,6 +83,10 @@ export function createRoutes(
   options: ServerOptions = {},
   serviceURLs: () => ReadonlyArray<string> = () => [],
   overrides: LayerNode.Replacements = [],
+  control: ServerControl.Interface = {
+    available: false,
+    shutdown: Effect.void,
+  },
 ) {
   return makeRoutes(
     options.password
@@ -90,6 +95,8 @@ export function createRoutes(
     options,
     serviceURLs,
     overrides,
+    undefined,
+    control,
   )
 }
 
@@ -102,7 +109,14 @@ export function createEmbeddedRoutes(
   overrides: LayerNode.Replacements = [],
   instances?: InstanceNode,
 ) {
-  return makeRoutes(ServerAuth.Config.configLayer({ password: Option.none() }), options, () => [], overrides, instances)
+  return makeRoutes(
+    ServerAuth.Config.configLayer({ password: Option.none() }),
+    options,
+    () => [],
+    overrides,
+    instances,
+    { available: false, shutdown: Effect.void },
+  )
 }
 
 function makeRoutes<AuthError, AuthServices>(
@@ -112,6 +126,7 @@ function makeRoutes<AuthError, AuthServices>(
   // Runtime-profile replacements (e.g. workerd) applied after the standard set, so later entries win.
   overrides: LayerNode.Replacements,
   instances?: InstanceNode,
+  control: ServerControl.Interface = { available: false, shutdown: Effect.void },
 ) {
   const standard: LayerNode.Replacements = [
     Database.node.replace(Database.configured(options.database)),
@@ -163,20 +178,34 @@ function makeRoutes<AuthError, AuthServices>(
     Layer.flatMap((context) => {
       const services = Layer.succeedContext(context)
       const requestServices = Layer.merge(
-        Layer.succeedContext(
-          Context.pick(
-            Database.Service,
-            Credential.Service,
-            PermissionSaved.Service,
-            PluginUpdate.Service,
-            Project.Service,
-            WellKnown.Service,
-          )(context),
+        Layer.succeed(
+          ServerControl.Service,
+          ServerControl.Service.of(control),
         ),
-        ServerInfo.layer(serviceURLs, Context.get(context, Global.Service).tmp, options.app),
+        Layer.merge(
+          Layer.succeedContext(
+            Context.pick(
+              Database.Service,
+              Credential.Service,
+              PermissionSaved.Service,
+              PluginUpdate.Service,
+              Project.Service,
+              WellKnown.Service,
+            )(context),
+          ),
+          ServerInfo.layer(serviceURLs, Context.get(context, Global.Service).tmp, options.app),
+        ),
       )
       const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
-        Layer.provide(handlers.pipe(Layer.provide(services), Layer.provide(Layer.succeed(CorsConfig, options)))),
+        Layer.provide(
+          handlers.pipe(
+            Layer.provide(services),
+            // The control surface is a process-global service, not a request
+            // service: it must be present while the handler fiber runs.
+            Layer.provide(Layer.succeed(ServerControl.Service, ServerControl.Service.of(control))),
+            Layer.provide(Layer.succeed(CorsConfig, options)),
+          ),
+        ),
         Layer.provide(formLocationLayer),
         Layer.provide(sessionLocationLayer),
         Layer.provide(layer),

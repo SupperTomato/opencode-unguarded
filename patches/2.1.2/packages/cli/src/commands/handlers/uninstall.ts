@@ -1,5 +1,6 @@
 import { confirm, intro, log, outro, spinner } from "@clack/prompts"
 import { Service } from "@opencode/client/effect/service"
+import { parseRegistration } from "@opencode/client/service-registration-decoder"
 import { Global } from "@opencode/util/global"
 import { Effect, FileSystem, Option, Schedule, Schema } from "effect"
 import path from "node:path"
@@ -216,6 +217,19 @@ const uninstallDerivative = Effect.fn("cli.uninstall.derivative")(function* (inp
       ),
     )
 
+  // The whole root is deleted recursively, so every entry must be a program file
+  // this installer writes. A durable profile or an unrelated file inside the
+  // root means the directory is not exclusively ours.
+  const unexpected = yield* unexpectedEntries(fs, rootReal)
+  if (unexpected.length > 0)
+    return yield* Effect.fail(
+      new Error(
+        `refusing to remove ${rootReal}: it contains entries an installation does not own ` +
+          `(${unexpected.slice(0, 5).join(", ")}${unexpected.length > 5 ? ", ..." : ""}). ` +
+          `Move them out, then uninstall.`,
+      ),
+    )
+
   const registration = path.join(global.state, "service-unguarded.json")
   const registered = yield* readRegistration(fs, registration)
   // A registration that cannot be read is not evidence that no service exists.
@@ -341,6 +355,15 @@ const verifyInstallationOwnership = (fs: FileSystem.FileSystem, root: string) =>
       )
     if (info.value.executableSha256 === undefined)
       return `refusing to remove ${root}: BUILD-INFO.json does not record the executable hash`
+    if (info.value.launcherSha256 === undefined)
+      return `refusing to remove ${root}: BUILD-INFO.json does not record the launcher hash`
+    const installedLauncher = yield* fs.realPath(path.join(root, "bin", "opencode-unguarded")).pipe(Effect.option)
+    if (Option.isNone(installedLauncher) || !isInside(installedLauncher.value, root))
+      return `refusing to remove ${root}: its launcher resolves outside the installation`
+    const launcherDigest = yield* sha256File(fs, installedLauncher.value).pipe(Effect.option)
+    if (Option.isNone(launcherDigest)) return `refusing to remove ${root}: its launcher could not be read`
+    if (launcherDigest.value !== info.value.launcherSha256)
+      return `refusing to remove ${root}: its launcher does not match BUILD-INFO.json`
     const actual = yield* sha256File(fs, installed.value).pipe(Effect.option)
     if (Option.isNone(actual)) return `refusing to remove ${root}: its executable could not be read`
     if (actual.value !== info.value.executableSha256)
@@ -357,7 +380,31 @@ const BuildInfo = Schema.Struct({
   derivativeRevision: Schema.optional(Schema.String),
   installationId: Schema.optional(Schema.String),
   executableSha256: Schema.optional(Schema.String),
+  launcherSha256: Schema.optional(Schema.String),
 })
+
+/**
+ * Program files a packaged installation may contain. Removal verifies that
+ * every entry under the root is part of this inventory before deleting
+ * anything; an unexpected file means the directory is not exclusively ours, and
+ * a recursive delete could destroy unrelated data.
+ */
+const OWNED_FILES = new Set([
+  "BUILD-INFO.json",
+  "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
+  "acceptance.sh",
+  "bin/opencode-unguarded",
+  "collector.ts",
+  "install.sh",
+  "libexec/opencode",
+  "model-stub.ts",
+  "telemetry-harness.sh",
+  "uninstall.sh",
+])
+
+const OWNED_DIRECTORIES = new Set(["bin", "libexec"])
+
 
 /** Whether a registration describes a service owned by this installation. */
 function registrationBelongsToInstallation(
@@ -373,32 +420,60 @@ function registrationBelongsToInstallation(
   return registration.installation === ownership.installationId
 }
 
-// Must match what the client reads, so a registration this handler accepts is
-// never one Service.stop would treat as absent.
-const Registration = Schema.Struct({
-  id: Schema.optional(Schema.String),
-  version: Schema.optional(Schema.String),
-  pid: Schema.Int.check(Schema.isGreaterThan(0)),
-  url: Schema.String,
-  derivative: Schema.optional(Schema.String),
-  derivativeRevision: Schema.optional(Schema.String),
-  installation: Schema.optional(Schema.String),
-  startTime: Schema.optional(Schema.String),
-})
-type Registration = typeof Registration.Type
-
-/** Read a registration, distinguishing absent from present-but-unreadable. */
+/**
+ * Read a registration through the same validated contract the clients use, so
+ * a record this handler accepts is never one Service.stop would treat as absent.
+ * A present-but-unreadable record is invalid, not absent: removal then stops.
+ */
 const readRegistration = (fs: FileSystem.FileSystem, file: string) =>
   Effect.gen(function* () {
     const exists = yield* fs.exists(file)
     if (!exists) return { _tag: "absent" } as const
     const text = yield* fs.readFileString(file).pipe(Effect.option)
     if (Option.isNone(text)) return { _tag: "invalid" } as const
-    const decoded = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Registration))(text.value).pipe(
-      Effect.option,
-    )
-    if (Option.isNone(decoded)) return { _tag: "invalid" } as const
-    return { _tag: "valid", info: decoded.value } as const
+    return parseRegistration(text.value)
+  })
+
+/**
+ * Entries under the installation root that an installation does not own.
+ *
+ * This is a read-only inventory: it never follows a symlink, and it reports
+ * anything outside the packaged layout so removal can refuse before deleting.
+ * A durable profile directory (`data`, `config`, ...) is unexpected here for
+ * the same reason: removing it would destroy user data.
+ */
+const unexpectedEntries = (fs: FileSystem.FileSystem, root: string) =>
+  Effect.gen(function* () {
+    const unexpected: string[] = []
+    const walk = (directory: string, prefix: string): Effect.Effect<void, never, never> =>
+      Effect.gen(function* () {
+        const names = yield* fs.readDirectory(directory).pipe(Effect.orElseSucceed(() => [] as string[]))
+        for (const name of names) {
+          const relative = prefix === "" ? name : `${prefix}/${name}`
+          const full = path.join(directory, name)
+          const link = yield* fs.readLink(full).pipe(Effect.option)
+          if (Option.isSome(link)) {
+            unexpected.push(relative)
+            continue
+          }
+          const stat = yield* fs.stat(full).pipe(Effect.option)
+          if (Option.isNone(stat)) {
+            unexpected.push(relative)
+            continue
+          }
+          if (stat.value.type === "Directory") {
+            if (prefix === "" && !OWNED_DIRECTORIES.has(name)) {
+              unexpected.push(relative + "/")
+              continue
+            }
+            yield* walk(full, relative)
+            continue
+          }
+          if (!OWNED_FILES.has(relative)) unexpected.push(relative)
+        }
+      })
+    yield* walk(root, "")
+    return unexpected
   })
 
 /** SHA-256 of a file, or a failure when it cannot be read. */

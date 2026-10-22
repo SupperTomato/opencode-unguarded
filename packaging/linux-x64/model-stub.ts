@@ -14,8 +14,19 @@
  */
 
 const FILE = "harness-target.txt"
-const CONTENTS = "harness tool output"
 const CALL_ID = "call_harness_1"
+// The expected contents are read from a file per request. The harness writes a
+// fresh random value for each exercise, so a hardcoded success reply cannot
+// satisfy the check when the file is missing or the tool failed.
+const EXPECTED_FILE = process.env.EXPECTED_FILE ?? ""
+function expected() {
+  if (EXPECTED_FILE.length === 0) return ""
+  try {
+    return require("node:fs").readFileSync(EXPECTED_FILE, "utf8").trim()
+  } catch {
+    return ""
+  }
+}
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -25,11 +36,23 @@ const server = Bun.serve({
     if (url.pathname.endsWith("/chat/completions")) {
       const body = (await request.json().catch(() => ({}))) as {
         stream?: boolean
-        messages?: ReadonlyArray<{ role?: string; content?: unknown }>
+        messages?: ReadonlyArray<{ role?: string; content?: unknown; tool_call_id?: string }>
       }
-      const sawToolResult = (body.messages ?? []).some((message) => message.role === "tool")
+      // A tool result counts only when it answers this call and carries the
+      // expected file contents. An error result, a different call, or unrelated
+      // tool traffic must not look like a successful read.
+      const contents = expected()
+      const result = (body.messages ?? []).find(
+        (message) =>
+          message.role === "tool" &&
+          message.tool_call_id === CALL_ID &&
+          typeof message.content === "string" &&
+          contents.length > 0 &&
+          message.content.includes(contents),
+      )
+      const sawToolResult = result !== undefined
       const message = sawToolResult
-        ? { role: "assistant", content: `tool returned: ${CONTENTS}` }
+        ? { role: "assistant", content: `tool returned: ${contents}` }
         : {
             role: "assistant",
             content: null,

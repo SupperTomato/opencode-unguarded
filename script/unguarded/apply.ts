@@ -30,6 +30,7 @@ import {
   validateManifest,
   verify,
   verifyUpstreamIdentity,
+  verifyWorktreeIdentity,
   type Change,
   type Manifest,
   type Planned,
@@ -49,6 +50,7 @@ export {
   validateManifest,
   verify,
   verifyUpstreamIdentity,
+  verifyWorktreeIdentity,
 }
 export type { Change, Manifest, Planned }
 
@@ -100,20 +102,31 @@ if (import.meta.main) {
   const args = process.argv.slice(2)
   const version = positional(args, ["--root"])[0]
   if (!version) {
-    console.error("usage: bun script/unguarded/apply.ts <upstream-version> [--root <dir>] [--check]")
+    console.error(
+      "usage: bun script/unguarded/apply.ts <upstream-version> [--root <dir>] [--check] [--verify-worktree]",
+    )
     process.exit(2)
   }
   const root = cliRoot(args)
   const check = args.includes("--check")
+  // The derivative repository contains payloads, scripts, and tests that are
+  // not part of the assembled upstream tree. Worktree identity therefore applies
+  // to an assembled source tree only, and is requested explicitly.
+  const worktree = args.includes("--verify-worktree")
   const manifest = loadManifest(version)
 
   try {
+    // Identity is enforced in both modes. `--check` verifies a tree; skipping
+    // source identity there would let validation approve an unrelated source.
+    verifyUpstreamIdentity(root, manifest)
     if (!check) {
-      const changes = apply(root, manifest)
+      // Applying is the only writer: plan validates the whole tree first, so a
+      // rejected plan leaves no changes behind.
+      const changes = applyRoot(root, manifest, transforms(manifest))
       for (const change of changes) console.log(`patched ${change.file}: ${change.reason}`)
       if (changes.length === 0) console.log("no changes needed (already patched)")
     }
-    const errors = verify(root, manifest)
+    const errors = [...verify(root, manifest), ...(worktree ? verifyWorktreeIdentity(root, manifest) : [])]
     if (errors.length > 0) {
       console.error("Guardrail verification failed:")
       for (const error of errors) console.error(`- ${error}`)

@@ -14,7 +14,7 @@ function evaluate(source: string) {
       "--define",
       "OPENCODE_UNGUARDED=true",
       "--define",
-      'OPENCODE_UNGUARDED_REVISION="5"',
+      'OPENCODE_UNGUARDED_REVISION="7"',
       "--define",
       'OPENCODE_UNGUARDED_UPSTREAM="a517687fde98a7329ada3ae644a01a9fc6c4e99e"',
       "-e",
@@ -27,7 +27,7 @@ function evaluate(source: string) {
 
 const IDENTITY = {
   derivative: "opencode-unguarded",
-  derivativeRevision: "5",
+  derivativeRevision: "7",
   installation: "installation-1",
 }
 

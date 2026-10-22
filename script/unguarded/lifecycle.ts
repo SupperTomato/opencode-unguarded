@@ -138,15 +138,31 @@ export function verifySignalSafety(root: string) {
     if (!/if \(isDerivative\(\)\) \{/.test(client))
       errors.push(`${file}: termination is not scoped to the derivative build`)
     if (!client.includes("ownerExited"))
-      errors.push(`${file}: termination does not clear a provably exited owner safely`)
+      errors.push(`${file}: termination does not recognize a provably exited owner`)
     if (!/probe\.status !== "verified"/.test(client))
       errors.push(`${file}: termination does not require a verified owner`)
     // Lifetime agreement is enforced inside the probe, so every caller gets it.
     if (!/lifecycle-mismatch/.test(probe))
       errors.push(`${CLIENT_PROBE}: the registration and live process lifetime are not compared`)
-    if (!client.includes("options.installation") && !client.includes("installation: options.installation"))
+    if (!client.includes("options.installation"))
       errors.push(`${file}: termination does not bind to the caller's installation`)
+    // A derivative stop must ask the addressed instance, never signal a PID.
+    if (!/shutdownInstance\(/.test(client))
+      errors.push(`${file}: derivative termination does not use instance-bound shutdown`)
+    if (!/authorizedRecord\(/.test(client))
+      errors.push(`${file}: stale records are not authorized before cleanup`)
+    if (/signal\(info\.pid|signal\(pid, name\)/.test(client.replace(/signalStock/g, "")))
+      errors.push(`${file}: derivative termination still signals a numeric PID`)
   }
+
+  const control = read(root, "packages/client/src/service-control.ts")
+  if (!/authorizedRecord/.test(control))
+    errors.push("packages/client/src/service-control.ts: stale cleanup is not authorized")
+  if (!/shutdownInstance/.test(control))
+    errors.push("packages/client/src/service-control.ts: instance-bound shutdown is missing")
+  const decoder = read(root, "packages/client/src/service-registration-decoder.ts")
+  if (!/decodeRegistration/.test(decoder))
+    errors.push("packages/client/src/service-registration-decoder.ts: the shared registration contract is missing")
 
   const registration = read(root, REGISTRATION)
   if (!registration.includes("derivativeRevision: options.derivativeRevision"))
@@ -175,13 +191,18 @@ export function verifySignalSafety(root: string) {
     errors.push(`${SERVICE_CONFIG}: CLI calls do not pass their own installation identity`)
 
   const installModule = read(root, "packages/cli/src/services/installation.ts")
-  if (!installModule.includes("isInside(canonicalExecutable, canonical)"))
-    errors.push("packages/cli/src/services/installation.ts: an inherited root is trusted without proving the executable lives there")
+  // Identity comes from the executable's own installed layout, never from a
+  // claimed environment root, and metadata is accepted only for those exact bytes.
+  if (!/path\.basename\(canonicalExecutable\) !== "opencode"\) return undefined/.test(installModule))
+    errors.push("packages/cli/src/services/installation.ts: identity is not derived from the installed layout")
+  if (!/executableSha256/.test(installModule))
+    errors.push("packages/cli/src/services/installation.ts: installation metadata is not bound to the executable bytes")
+
 
   const roots = read(root, GLOBAL_ROOTS)
   if (!/function derivativeProfile\(\)/.test(roots))
     errors.push(`${GLOBAL_ROOTS}: the executable does not resolve its own profile`)
-  if (!/path\.isAbsolute\(raw\)/.test(roots))
+  if (!/path\.isAbsolute\(requested\)/.test(roots))
     errors.push(`${GLOBAL_ROOTS}: a relative profile is not rejected by the executable`)
   if (!/canonicalExistingAncestor/.test(roots))
     errors.push(`${GLOBAL_ROOTS}: profile containment does not resolve symlinked ancestors`)
@@ -207,6 +228,12 @@ export function verifyDerivativeUninstall(root: string) {
     errors.push(`${UNINSTALL}: removal does not bind the service to this installation`)
   if (!/overlaps the application profile/.test(body))
     errors.push(`${UNINSTALL}: removal does not reject profile overlap`)
+  if (!/unexpectedEntries/.test(body))
+    errors.push(`${UNINSTALL}: removal does not verify exclusive ownership of the root contents`)
+  if (!/launcherSha256/.test(body))
+    errors.push(`${UNINSTALL}: removal does not verify the launcher hash`)
+  if (!/parseRegistration/.test(body))
+    errors.push(`${UNINSTALL}: removal does not use the shared registration contract`)
   if (!/realPath\(root\)/.test(body))
     errors.push(`${UNINSTALL}: removal does not canonicalize the installation root`)
   if (!/service-unguarded\.json/.test(body))
