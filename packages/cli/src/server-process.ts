@@ -131,13 +131,11 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
         available: options.mode === "service" && UNGUARDED,
         instanceId: instanceID,
         startTime,
-        // The server's own latch closes its listener; the managed process then
-        // exits so the registration and port do not linger. This runs only
-        // after the caller proved it addressed this exact instance.
-        shutdown: Effect.suspend(() => shutdownRef.current ?? Effect.void).pipe(
-          Effect.andThen(Effect.sleep("250 millis")),
-          Effect.andThen(Effect.sync(() => process.exit(0))),
-        ),
+        // Open the server's own shutdown latch. The service main effect then
+        // returns, its scopes close, finalizers run, the registration is
+        // removed, and the process exits normally. This runs only after the
+        // caller proved it addressed this exact instance.
+        shutdown: Effect.suspend(() => shutdownRef.current ?? Effect.void),
       }
       const launch = start(
         {
@@ -190,6 +188,9 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
           : {
               onListen: (address, shutdown) =>
                 Effect.gen(function* () {
+                  // Published before the application is ready, so a stop request
+                  // against a slow or failed startup still has a real target.
+                  shutdownRef.current = shutdown
                   if (!config.password) yield* ServiceConfig.password(password)
                   return yield* ServiceRegistration.register({
                     address,

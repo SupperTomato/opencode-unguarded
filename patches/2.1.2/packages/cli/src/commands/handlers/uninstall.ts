@@ -334,6 +334,8 @@ const verifyInstallationOwnership = (fs: FileSystem.FileSystem, root: string) =>
     if (Option.isNone(info)) return `refusing to remove ${root}: its BUILD-INFO.json is not valid installation metadata`
     if (info.value.derivative !== UNGUARDED_IDENTITY.name)
       return `refusing to remove ${root}: it is not an opencode-unguarded installation`
+    if (info.value.installationId === undefined || info.value.installationId.length === 0)
+      return `refusing to remove ${root}: BUILD-INFO.json does not record an installation identity`
     if (info.value.derivativeRevision !== UNGUARDED_IDENTITY.revision)
       return (
         `refusing to remove ${root}: it was installed by derivative revision ` +
@@ -447,7 +449,15 @@ const unexpectedEntries = (fs: FileSystem.FileSystem, root: string) =>
     const unexpected: string[] = []
     const walk = (directory: string, prefix: string): Effect.Effect<void, never, never> =>
       Effect.gen(function* () {
-        const names = yield* fs.readDirectory(directory).pipe(Effect.orElseSucceed(() => [] as string[]))
+        // An unreadable directory is not an empty one: proceeding would delete
+        // contents that were never inspected.
+        const names = yield* fs.readDirectory(directory).pipe(
+          Effect.catch((error) =>
+            Effect.sync(() => {
+              throw new Error(`could not inspect ${directory}: ${errorMessage(error)}`)
+            }),
+          ),
+        )
         for (const name of names) {
           const relative = prefix === "" ? name : `${prefix}/${name}`
           const full = path.join(directory, name)

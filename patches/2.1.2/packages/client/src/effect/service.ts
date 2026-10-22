@@ -96,6 +96,17 @@ export const ensure = Effect.fn("service.ensure")(function* (options: EnsureOpti
       if (timeouts.count >= 3) {
         yield* announce("missing")
         yield* Effect.logWarning("Background service is unresponsive; recovery cannot preserve persistent terminals")
+        // Authorize and verify the owner before touching terminal state: an
+        // unverifiable or foreign registration must not lose its handoff data.
+        if (isDerivative()) {
+          const outcome = yield* requireVerifiedOwner(info, options, timing.requestTimeout).pipe(Effect.option)
+          if (Option.isNone(outcome)) return yield* Effect.fail(
+            new Error(
+              `refusing to recover unresponsive service pid ${info.pid}: the registration did not prove ownership. ` +
+                `Check ${options.file ?? fallback()} and stop the process manually if it is still running.`,
+            ),
+          )
+        }
         yield* Effect.tryPromise(() => PtyHandoff.clear(options.file ?? fallback()))
         yield* terminate(info, options, timing)
         pool.evict(info.pid)

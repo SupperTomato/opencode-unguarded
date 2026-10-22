@@ -139,30 +139,13 @@ for name in data config cache state tmp; do
   assert_no_links "$profile_real" "$name/opencode" "application"
 done
 
-if [ "$dry" -eq 0 ]; then
-  mkdir -p "$profile_real/data" "$profile_real/config" "$profile_real/cache" "$profile_real/state" "$profile_real/tmp"
-fi
-
+# Existing storage must be sound before anything is created or chmodded.
 for name in data config cache state tmp; do
   directory="$profile_real/$name"
   if [ -e "$directory" ]; then
     resolved="$(cd -P "$directory" && pwd)"
     [ "$resolved" = "$directory" ] || die "refusing symlinked profile storage: $name -> $resolved"
     [ -O "$directory" ] || die "profile storage is not owned by the current user: $directory"
-    [ "$dry" -eq 1 ] || chmod 700 "$directory" 2>/dev/null || true
-  else
-    [ "$dry" -eq 1 ] || mkdir -p "$directory"
-  fi
-done
-
-for name in data config cache state tmp; do
-  appdir="$profile_real/$name/opencode"
-  if [ "$dry" -eq 0 ]; then
-    mkdir -p "$appdir"
-    resolved="$(cd -P "$appdir" && pwd)"
-    [ "$resolved" = "$appdir" ] || die "refusing escaped application directory: $name/opencode -> $resolved"
-    [ -O "$appdir" ] || die "application directory is not owned by the current user: $appdir"
-    chmod 700 "$appdir" 2>/dev/null || true
   fi
 done
 
@@ -208,6 +191,25 @@ assert_no_linked_children() {
 for name in data config cache state; do
   assert_no_linked_children "$profile_real/$name/opencode"
 done
+
+# Every check above has passed. Only now may the launcher create directories and
+# tighten permissions; a rejected invocation must leave the filesystem unchanged.
+if [ "$dry" -eq 0 ]; then
+  mkdir -p "$profile_real/data" "$profile_real/config" "$profile_real/cache" "$profile_real/state" "$profile_real/tmp"
+  for name in data config cache state tmp; do
+    directory="$profile_real/$name"
+    resolved="$(cd -P "$directory" && pwd)"
+    [ "$resolved" = "$directory" ] || die "refusing symlinked profile storage: $name -> $resolved"
+    [ -O "$directory" ] || die "profile storage is not owned by the current user: $directory"
+    chmod 700 "$directory" 2>/dev/null || true
+    appdir="$profile_real/$name/opencode"
+    mkdir -p "$appdir"
+    resolved="$(cd -P "$appdir" && pwd)"
+    [ "$resolved" = "$appdir" ] || die "refusing escaped application directory: $name/opencode -> $resolved"
+    [ -O "$appdir" ] || die "application directory is not owned by the current user: $appdir"
+    chmod 700 "$appdir" 2>/dev/null || true
+  done
+fi
 
 export OPENCODE_UNGUARDED_PROFILE="$profile_real"
 export OPENCODE_UNGUARDED_ROOT="$root"

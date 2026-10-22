@@ -108,12 +108,15 @@ Effect.gen(function* () {
       process.off("unhandledRejection", unhandledRejection)
     }),
   )
+  // The raw argument vector can contain credentials: service passwords,
+  // environment values, auth answers, authorization headers, or request data.
+  // Log only the operation, with sensitive operands removed.
   yield* Effect.logInfo("cli starting", {
     version: OPENCODE_VERSION,
     channel: OPENCODE_CHANNEL,
     local: OPENCODE_LOCAL,
     derivative: UNGUARDED ? UNGUARDED_IDENTITY : undefined,
-    args: process.argv.slice(2),
+    args: redactArguments(process.argv.slice(2)),
   })
   // opencode-unguarded: report the derivative revision in --version so an
   // installed candidate can be told apart from stock OpenCode 2.1.2.

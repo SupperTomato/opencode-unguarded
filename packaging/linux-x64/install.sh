@@ -14,6 +14,17 @@ die() {
   exit 1
 }
 
+# Fail after activation work may have begun: restore the previous state first.
+die_after_activation() {
+  local message="$1"
+  if rollback; then
+    echo "install.sh: $message; the previous state was restored" >&2
+  else
+    echo "install.sh: $message; rollback FAILED - inspect $prefix_real and $previous" >&2
+  fi
+  exit 1
+}
+
 archive=""
 prefix="${OPENCODE_UNGUARDED_INSTALL:-$HOME/.local/opt/opencode-unguarded}"
 link=1
@@ -126,6 +137,9 @@ if [ -e "$prefix_real" ] || [ -L "$prefix_real" ]; then
   recorded_launcher="$(jq -r '.launcherSha256 // empty' "$prefix_real/BUILD-INFO.json")"
   [ -n "$recorded_executable" ] && [ -n "$recorded_launcher" ] ||
     die "$prefix_real records no executable or launcher hash; refusing to replace an unverified directory"
+  recorded_installation="$(jq -r '.installationId // empty' "$prefix_real/BUILD-INFO.json")"
+  [ -n "$recorded_installation" ] ||
+    die "$prefix_real records no installation identity; refusing to replace an unverified directory"
   [ ! -L "$prefix_real/libexec/opencode" ] && [ -f "$prefix_real/libexec/opencode" ] ||
     die "$prefix_real/libexec/opencode is missing or a link"
   [ ! -L "$prefix_real/bin/opencode-unguarded" ] && [ -f "$prefix_real/bin/opencode-unguarded" ] ||
@@ -165,17 +179,48 @@ previous=""
 link_created=0
 service_stopped=0
 committed=0
+# Transaction state. Rollback acts only on resources this run created, so an
+# interruption before the previous installation is backed up can never delete
+# the live installation.
+phase=preflight
+before_link="/nonexistent"
+current="$HOME/.local/bin/opencode-unguarded"
 
 rollback() {
   [ "$committed" -eq 1 ] && return 0
-  rm -rf "$prefix_real" 2>/dev/null || true
-  if [ -n "$previous" ]; then
-    if ! mv "$previous" "$prefix_real" 2>/dev/null; then
-      echo "install.sh: ROLLBACK FAILED - previous installation is at $previous" >&2
-      return 1
-    fi
-    previous=""
-  fi
+  case "$phase" in
+    preflight)
+      # The installation prefix has not been touched. Nothing to restore.
+      return 0
+      ;;
+    staged)
+      # The old installation is still active; only the staging copy exists.
+      [ -n "$staging" ] && rm -rf "$staging" 2>/dev/null || true
+      staging=""
+      return 0
+      ;;
+    old-moved)
+      # The old root was displaced but the new one is not active. Restore it.
+      if [ ! -e "$prefix_real" ] && [ -n "$previous" ]; then
+        if ! mv "$previous" "$prefix_real" 2>/dev/null; then
+          echo "install.sh: ROLLBACK FAILED - previous installation is at $previous" >&2
+          return 1
+        fi
+        previous=""
+      fi
+      ;;
+    new-active|link-active)
+      # Only the root this transaction activated may be removed.
+      if [ -n "$previous" ]; then
+        rm -rf "$prefix_real" 2>/dev/null || true
+        if ! mv "$previous" "$prefix_real" 2>/dev/null; then
+          echo "install.sh: ROLLBACK FAILED - previous installation is at $previous" >&2
+          return 1
+        fi
+        previous=""
+      fi
+      ;;
+  esac
   if [ "$link_created" -eq 1 ]; then
     if [ "$before_link" = "/nonexistent" ]; then
       rm -f "$current" 2>/dev/null || true
@@ -239,11 +284,17 @@ verbose="$(tar tzvf "$archive")" || die "archive cannot be inspected"
 if printf '%s\n' "$verbose" | grep -Eq '^[lhcbps]'; then
   die "archive contains a symbolic link, hard link, or special file; refusing to extract"
 fi
-duplicates="$(printf '%s\n' "$listing" | sort | uniq -d)"
+# Sort with a fixed locale so sort and comm agree; a locale mismatch makes
+# comm fail, and a suppressed comparison failure would skip this gate.
+sort_members() { LC_ALL=C sort; }
+duplicates="$(printf '%s\n' "$listing" | sort_members | uniq -d)"
 [ -z "$duplicates" ] || die "archive contains duplicate members: $(printf '%s' "$duplicates" | tr '\n' ' ')"
 # Required regular files. Directory entries are implied by their children and
 # are not compared, since a tar may or may not record them explicitly.
 allowed_members="$(printf '%s\n' \
+  opencode-unguarded \
+  opencode-unguarded/bin \
+  opencode-unguarded/libexec \
   opencode-unguarded/BUILD-INFO.json \
   opencode-unguarded/LICENSE \
   opencode-unguarded/THIRD_PARTY_NOTICES.md \
@@ -254,11 +305,19 @@ allowed_members="$(printf '%s\n' \
   opencode-unguarded/libexec/opencode \
   opencode-unguarded/model-stub.ts \
   opencode-unguarded/telemetry-harness.sh \
-  opencode-unguarded/uninstall.sh | sort)"
-unexpected_members="$(printf '%s\n' "$listing" | grep -v '/$' | grep -v '^opencode-unguarded$' | sort | comm -23 - <(printf '%s\n' "$allowed_members") || true)"
+  opencode-unguarded/uninstall.sh | sort_members)"
+# Every archive member must be a required regular file or one of the two
+# package directories. Directory entries are matched exactly, so an unexpected
+# empty directory is refused rather than silently extracted.
+actual_members="$(printf '%s\n' "$listing" | sed 's:/$::' | sort_members)"
+if ! unexpected_members="$(printf '%s\n' "$actual_members" | comm -23 - <(printf '%s\n' "$allowed_members") )"; then
+  die "could not compare archive members against the package layout"
+fi
 [ -z "$unexpected_members" ] ||
   die "archive contains members outside the package layout: $(printf '%s' "$unexpected_members" | tr '\n' ' ')"
-missing_members="$(printf '%s\n' "$allowed_members" | comm -23 - <(printf '%s\n' "$listing" | grep -v '/$' | sort) || true)"
+if ! missing_members="$(printf '%s\n' "$allowed_members" | comm -23 - <(printf '%s\n' "$actual_members"))"; then
+  die "could not compare archive members against the package layout"
+fi
 [ -z "$missing_members" ] ||
   die "archive is missing required members: $(printf '%s' "$missing_members" | tr '\n' ' ')"
 
@@ -309,7 +368,6 @@ mv "$source/BUILD-INFO.json.new" "$source/BUILD-INFO.json"
 bindir="$HOME/.local/bin"
 target="$prefix_real/bin/opencode-unguarded"
 current="$bindir/opencode-unguarded"
-before_link="/nonexistent"
 if [ "$link" -eq 1 ]; then
   # The command directory itself must be usable: mkdir fails if it is a regular
   # file, and that must be discovered before the previous installation moves.
@@ -348,9 +406,16 @@ if [ "$previous_state" = present ]; then
   fi
 fi
 
+# Capture the command-link state before any displacement, so rollback can
+# restore it even if the link changes during activation.
+if [ -L "$current" ]; then
+  before_link="$(readlink "$current")" || die "could not read the existing command link"
+fi
+
 mkdir -p "$(dirname "$prefix_real")"
 # A unique staging directory avoids deleting a path another process guessed.
 staging="$(mktemp -d "$(dirname "$prefix_real")/.opencode-unguarded.stage.XXXXXX")"
+phase=staged
 cp -a "$source/." "$staging/"
 
 previous=""
@@ -358,23 +423,18 @@ if [ -e "$prefix_real" ]; then
   previous="$(mktemp -d "$(dirname "$prefix_real")/.opencode-unguarded.previous.XXXXXX")"
   rmdir "$previous" || die "could not allocate a rollback path"
   mv "$prefix_real" "$previous"
-fi
-if [ -L "$current" ]; then
-  before_link="$(readlink "$current")" || die "could not read the existing command link"
+  phase=old-moved
 fi
 
 fail_activated() {
-  local message="$1"
-  if rollback; then
-    die "$message; the previous state was restored"
-  fi
-  die "$message; rollback FAILED - inspect $prefix_real and $previous"
+  die_after_activation "$1"
 }
 
 if ! mv "$staging" "$prefix_real"; then
   fail_activated "failed to activate the installation"
 fi
 staging=""
+phase=new-active
 
 if ! OPENCODE_UNGUARDED_PROFILE="$work/profile" "$prefix_real/bin/opencode-unguarded" --version >/dev/null; then
   fail_activated "the activated installation failed to run"
@@ -385,6 +445,7 @@ if [ "$link" -eq 1 ]; then
   ln -sfn "$prefix_real/bin/opencode-unguarded" "$current" ||
     fail_activated "failed to create $current"
   link_created=1
+  phase=link-active
   [ "$(readlink "$current")" = "$prefix_real/bin/opencode-unguarded" ] ||
     fail_activated "$current does not point at the new installation"
 fi

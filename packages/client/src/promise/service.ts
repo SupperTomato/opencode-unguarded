@@ -75,6 +75,11 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
         if (timeouts.count >= 3) {
           announce("missing")
           console.warn("Background service is unresponsive; recovery cannot preserve persistent terminals")
+          // Authorize and verify the owner before touching terminal state: an
+          // unverifiable or foreign registration must not lose its handoff data.
+          if (isDerivative()) {
+            await requireVerifiedOwner(registration.info, options, timing.requestTimeout)
+          }
           await PtyHandoff.clear(options.file ?? fallback())
           await terminate(registration.info, options, timing)
           pool.evict(registration.info.pid)

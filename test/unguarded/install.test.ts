@@ -16,6 +16,8 @@ function makeArchive(
     embeddedRevision?: string
     omit?: "executableSha256" | "launcherSha256"
     failSecondRun?: boolean
+    extraMember?: string
+    emptyDirectory?: string
   } = {},
 ) {
   const work = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "unguarded-install-"))
@@ -73,6 +75,8 @@ console.log("opencode v" + info.version + "-unguarded." + ${JSON.stringify(optio
   if (options.omit) delete metadata[options.omit]
   fs.writeFileSync(path.join(stage, "BUILD-INFO.json"), JSON.stringify(metadata))
   if (options.symlink) fs.symlinkSync("/etc/passwd", path.join(stage, "escape"))
+  if (options.extraMember) fs.writeFileSync(path.join(stage, options.extraMember), "extra")
+  if (options.emptyDirectory) fs.mkdirSync(path.join(stage, options.emptyDirectory), { recursive: true })
   const archive = path.join(work, "opencode-unguarded-linux-x64.tar.gz")
   const tar = Bun.spawnSync(["tar", "-C", path.join(work, "package"), "-czf", archive, "opencode-unguarded"])
   expect(tar.exitCode).toBe(0)
@@ -117,6 +121,22 @@ describe("candidate installation", () => {
     const result = run(install, ["--archive", fixture.archive, "--prefix", fixture.prefix], { HOME: fixture.home })
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toContain("does not match metadata")
+    expect(fs.existsSync(fixture.prefix)).toBe(false)
+  })
+
+  test("refuses an archive with an unexpected ordinary file", () => {
+    const fixture = makeArchive({ extraMember: "extra.txt" })
+    const result = run(install, ["--archive", fixture.archive, "--prefix", fixture.prefix], { HOME: fixture.home })
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("outside the package layout")
+    expect(fs.existsSync(fixture.prefix)).toBe(false)
+  })
+
+  test("refuses an archive with an unexpected empty directory", () => {
+    const fixture = makeArchive({ emptyDirectory: "empty" })
+    const result = run(install, ["--archive", fixture.archive, "--prefix", fixture.prefix], { HOME: fixture.home })
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("outside the package layout")
     expect(fs.existsSync(fixture.prefix)).toBe(false)
   })
 

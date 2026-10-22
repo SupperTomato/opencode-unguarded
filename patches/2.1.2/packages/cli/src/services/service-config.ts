@@ -182,16 +182,33 @@ const REFUSED_ENV = new Set([
   "TMPDIR",
 ])
 
-export function assertSavedEnvironment(env: Readonly<Record<string, string>> | undefined) {
-  if (env === undefined || !UNGUARDED) return
-  for (const name of Object.keys(env)) {
-    if (REFUSED_ENV.has(name))
-      throw new Error(
-        `refusing saved service environment ${name}: it would redirect this profile. ` +
-          `Unset it with \`opencode service unset env ${name}\`.`,
-      )
-  }
+export function savedEnvironmentProblem(env: Readonly<Record<string, string>> | undefined) {
+  if (env === undefined || !UNGUARDED) return undefined
+  const name = Object.keys(env).find((key) => REFUSED_ENV.has(key))
+  if (name === undefined) return undefined
+  return (
+    `refusing saved service environment ${name}: it would redirect this profile. ` +
+    `Remove it with \`opencode service unset env ${name}\`.`
+  )
 }
+
+export function assertSavedEnvironment(env: Readonly<Record<string, string>> | undefined) {
+  const problem = savedEnvironmentProblem(env)
+  if (problem !== undefined) throw new Error(problem)
+}
+
+/**
+ * Options for an operation that must be able to repair an invalid saved
+ * environment. Identity and file path are safe; the saved environment is not
+ * applied, so a value that startup rejects cannot also block its own removal.
+ */
+export const repairOptions = Effect.fnUntraced(function* () {
+  const { file } = yield* paths
+  return {
+    file,
+    ...(UNGUARDED ? { installation: Installation.installationIdentity().id } : {}),
+  }
+})
 
 export const options = Effect.fnUntraced(function* (input: { readonly checkVersion?: boolean } = {}) {
   const { file, legacyRegistrationFiles } = yield* paths
@@ -407,7 +424,9 @@ export const unset = Effect.fn("cli.service-config.unset")(function* (key: strin
     }
     case "env": {
       if (name === undefined) throw new Error("Usage: opencode service unset env <key>")
-      yield* Service.stop(yield* options())
+      // The saved value may be the reason startup is refused, so stop through
+      // the repair options rather than the full validated set.
+      yield* Service.stop(yield* repairOptions())
       const existing = yield* read()
       const { [name]: _removed, ...env } = existing.env ?? {}
       const { env: _existingEnv, ...rest } = existing
