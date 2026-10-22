@@ -1,8 +1,9 @@
 # Validation record
 
-This file records what revision 3 verified, with the local evidence for each
-claim. CI runs the same gates; the workflow run URL is added to the release asset
-metadata, not to this file.
+This file records what the current revision verified, with the evidence for each
+claim. Results are labelled by where they were produced: local execution, CI, or
+an installed acceptance run. A check that was only inspected statically is not
+presented as runtime proof.
 
 ## Baseline
 
@@ -13,9 +14,9 @@ metadata, not to this file.
 | Tag | v2.1.2 |
 | Commit | a517687fde98a7329ada3ae644a01a9fc6c4e99e |
 | npm integrity | `sha512-9mBVQTO3WkKzP300NtHuhmXkHTfR2JwFB0AKRGRw4Lt3SNEwo5V4pzXXrwlpRAHoQmINLPuFPGOmn1kxYZdmMQ==` |
-| Derivative revision | 6 |
+| Derivative revision | 7 |
 | Target | linux-x64 |
-| Toolchain | Bun 1.4.2, Node 24 |
+| Toolchain | Bun 1.4.2, Node v24.22.0 (release) |
 
 `@opencode/cli@2.1.2` is the current OpenCode distribution line. `opencode-ai@1.19.3`
 is the previous generation; its source layout does not apply here.
@@ -29,10 +30,14 @@ is the previous generation; its source layout does not apply here.
 | `.3` | Exact fingerprints and the updater boundary, but a follow-up review found: uninstall could delete a profile inside the install root; the shell uninstaller used the wrong registration path and could remove another install; live discovery ignored the derivative marker; a stale PID could be signalled; nested profile directories and the default database were unchecked; database overrides were ignored; installer checksums were optional and link validation ran after activation; patch planning created directories before preflight; and release CI named two derivative suites it never copied, running 20 CLI tests instead of 26. Superseded. |
 | `.4` | Canonical removal and installer preflight, but a later review found: a 404 health response still authorized a signal; another derivative revision was indistinguishable; uninstall did not prove the executable belonged to the installation; installer rollback missed some post-activation failures; raw-binary containment was incomplete; dry run wrote files; a synthesized HEAD passed identity checks; and the telemetry harness exercised no session. Superseded. |
 | `.5` | Separate build, installation, and process-lifetime identity. A later review found that service checks never compared the registration with the *calling* installation, uninstall accepted records the client could not read, raw-binary containment was incomplete, and release evidence covered fewer tests than reported. Superseded. |
+| `.6` | Bound lifecycle operations to the calling installation. A deeper review found that startup and failed-boot health responses omitted that identity, a direct start could displace a live foreign registration, derivative termination still escalated by numeric PID, saved service environment could reintroduce a rejected override, removal did not verify exclusive ownership, and several runtime edits were absent from the manifest. Superseded. |
 
-Revision 6 closes those defects. Its release workflow runs the canonical check on
-the patched tree, both clients' upstream lifecycle suites plus the derivative
-suites, and packaged acceptance against exactly the packaged bytes.
+Revision 7 closes the `.6` defects. Every intended runtime change is declared in
+the manifest, so the assembled release tree is the reviewed source plus nothing
+else. The release workflow runs canonical lint and a scoped typecheck, both
+clients' suites, the CLI and util derivative suites, generated-artifact
+freshness, the telemetry harness, and packaged acceptance against exactly the
+packaged bytes.
 
 ## How to reproduce
 
@@ -158,7 +163,7 @@ calling installation, uninstall accepted registrations the client could not read
 raw-binary containment was incomplete, the install/rollback edge cases and patch
 identity remained partial, and release evidence was weaker than claimed.
 
-## Revision 6 acceptance
+## Revision 6 acceptance (superseded)
 
 ### Source and tooling
 
@@ -168,7 +173,7 @@ identity remained partial, and release evidence was weaker than claimed.
 | Client suites: 77 tests / 6 files | local run |
 | CLI suites: 32 tests / 6 files | local run |
 | Util derivative + OTLP: 4 tests | local run |
-| Canonical `bun run check` | 34/34 tasks, in CI on the patched release tree |
+| Canonical `bun run check` | 34/34 tasks, locally on the derivative checkout (the release tree now uses canonical lint plus a scoped typecheck) |
 | 6/6 validation gates on the final binary | `validate.ts --release ... --binary` |
 
 ### Defect-specific regressions
@@ -190,9 +195,9 @@ identity remained partial, and release evidence was weaker than claimed.
 
 | Check | Result |
 | --- | --- |
-| Installed executable hash | `f9449e152c5d3ceb1141f80e7f64052af2e9d8c773103b5db7e155bd9e1fbe00` |
-| Installed launcher hash | `634276adfb694234d3e713a5e9cfed750d475843051340266c4b8d14de41207f` |
-| Published vs installed | identical executable and launcher hashes |
+| Installed executable hash | `f9449e152c5d3ceb1141f80e7f64052af2e9d8c773103b5db7e155bd9e1fbe00` (revision 6; superseded) |
+| Installed launcher hash | `634276adfb694234d3e713a5e9cfed750d475843051340266c4b8d14de41207f` (revision 6; superseded) |
+| Published vs installed | identical executable and launcher hashes at the time of the `.6` install |
 | Installation identity preserved across replacement | same `installationId` before and after |
 | Production executable unchanged | `29eec08dde53b320744ed7a878c2e9ee77a2992dcf21bd023a4762dac94d8361`, `1.19.3` |
 | Candidate `--version` | `opencode v2.1.2-unguarded.6` |
@@ -204,24 +209,74 @@ identity remained partial, and release evidence was weaker than claimed.
 | Stop candidate only | stock service and registration unaffected |
 | Packaged acceptance of the downloaded archive | all checks passed |
 
-### Published artifact (.6)
+### Revision 7 verification
+
+| Check | Result | Where |
+| --- | --- | --- |
+| Derivative tooling tests | 103 pass / 7 files / 497 assertions | local |
+| Client suites | 256 pass / 23 files / 995 assertions | local |
+| CLI suites (upstream + derivative) | 42 pass / 8 files | local |
+| Util suites | 110 pass / 16 files | local |
+| Core routing/permission suites | 33 pass / 4 files | local |
+| Canonical `bun run check` | 34/34 tasks | local |
+| Validation gates on the built binary | 6 passed, 0 failed, 0 blocked | local |
+| Telemetry harness | stock emitted OTLP; candidate emitted none | local |
+| Packaged acceptance (downloaded archive) | all checks passed | local |
+| CI check workflow | success | CI |
+
+### Revision 7 defect regressions
+
+| Defect | Test or observation |
+| --- | --- |
+| Startup identity omitted | `server/identity.ts` is shared by the early health response and the ready handler; `packages/server/src/process.ts` |
+| Direct start displacing a live foreign owner | `service-registration.ts` checks the existing record; packaged acceptance cross-installation case |
+| Numeric-PID termination | `unguarded-termination.test.ts` requires instance control, including refusal for a daemon without it |
+| Stale cleanup without authority | `unguarded-termination.test.ts` preserves another installation's stale record |
+| Inherited PTY handoff effects | `daemon.ts` claims ownership before migrating or shutting down |
+| Credentials in logs | `unguarded-redact.test.ts` |
+| Default-profile and descendant storage escapes | `unguarded-direct-roots.test.ts` |
+| Saved service environment bypass | `service-config.ts` rejects the redirecting variables before spawning |
+| Recursive removal of unowned files | `uninstall.ts` inventory check; packaged acceptance unowned-content case |
+| Archive membership and rollback | `install.test.ts`; `install.sh` |
+| Worktree drift and `--check` identity | `verifyWorktreeIdentity`; `apply.ts` |
+| Stale generated artifacts | `check:generated` in the release workflow and in CI |
+| Tool result not verified | unpredictable expected value in `model-stub.ts` and both harnesses |
+
+### Published artifact (.7)
 
 | Field | Value |
 | --- | --- |
-| Release | https://github.com/SupperTomato/opencode-unguarded/releases/tag/v2.1.2-unguarded.6 |
-| Release target commit | `935fa4076e90044ab88c9b1f6bedfc6652c80313` |
-| Build/publish run | https://github.com/SupperTomato/opencode-unguarded/actions/runs/39674435384 |
+| Release | https://github.com/SupperTomato/opencode-unguarded/releases/tag/v2.1.2-unguarded.7 |
+| Release target commit | `1ba97bee12ea61bf366b3fbb307bec10a698657b` |
+| Build/publish run | https://github.com/SupperTomato/opencode-unguarded/actions/runs/39702152836 |
 | Archive SHA-256 | verified with the published `checksums.sha256` |
-| Executable SHA-256 | `f9449e152c5d3ceb1141f80e7f64052af2e9d8c773103b5db7e155bd9e1fbe00` |
-| Launcher SHA-256 | `634276adfb694234d3e713a5e9cfed750d475843051340266c4b8d14de41207f` |
-| Manifest SHA-256 | `406a8541ed650926e33c31dd04a9a70e1b5beaf7ec62a62df6678d5d2e1a32ad` |
-| Toolchain | Bun 1.4.2, Node v24.21.0 |
+| Executable SHA-256 | `d03904124027cfef17c54975fc0fc91f85b7db01916b48ab294bc96dec335422` |
+| Launcher SHA-256 | `e14a970ac94a9bcc7ac5a191e3b9df49fa413c5d6220259543dce589503060cf` |
+| Manifest SHA-256 | `d3ec58b9a27d3bf7376f5a24f19b5d92105ca01d6aa88d1af66526204ab7542e` |
+| Toolchain | Bun 1.4.2, Node v24.22.0 |
 
 The downloaded archive was verified against its checksum and extracted. Its
 metadata matches the local manifest, the executable and launcher match the
 recorded hashes, and packaged acceptance passed install, database overrides,
-read-only dry run for an existing and a missing profile, live service identity,
-a session with a real tool call, and uninstall.
+read-only dry run for an existing and a missing profile, live service identity, a
+managed session with a verified tool result, cross-installation refusal, malformed
+registration refusal, tampered-metadata refusal, unowned-content refusal, and
+uninstall while the service was running.
+
+### Installed acceptance (revision 7)
+
+| Check | Result |
+| --- | --- |
+| Installed executable hash | matches the published `d0390412…` |
+| Installed launcher hash | matches the published `e14a970a…` |
+| `--version` | `opencode v2.1.2-unguarded.7` |
+| Installation identity preserved across replacement | `150aa94d7e7d30e291c289f13e0b22cd` |
+| Durable profile preserved | `debug paths` resolves inside the existing profile |
+| Service status / start / restart | running service reported, restarted, and alive afterwards |
+| Cross-installation stop | refused with `installation-mismatch`, exit 1, owner still running |
+| Functional task | offline stub; the client executed a real read and reported the file contents |
+| Production executable | unchanged `29eec08d…`, version `1.19.3` |
+| Unrelated user processes | unchanged |
 
 ## Known limits
 
@@ -238,16 +293,39 @@ a session with a real tool call, and uninstall.
   but does not claim independent rebuild equality.
 - Lifecycle destructiveness is tested with disposable installations and fixture
   roots. The production installation receives only read-only identity checks.
-- A running `.2`, `.3`, or `.4` service is not force-migrated. Those registrations
-  lack the revision or installation identity revision 5 requires, so it refuses to
-  adopt them and reports the conflict. Stop the old service, then start `.5`; the
-  candidate never signals a service it cannot verify.
+- A running service from an earlier revision is not force-migrated. Its
+  registration lacks the revision or installation identity this revision
+  requires, so it refuses to adopt it and reports the conflict. Stop the old
+  service, then start the current one; the candidate never signals a service it
+  cannot verify.
 - Termination safety relies on the authenticated live identity, the registration
   identity, the caller's installation, and (on Linux) the process start time. A
   forceful signal is never sent to a PID that fails verification.
-- The release workflow's canonical check covers every package that ships with or
-  is built alongside the CLI. The two Astro documentation services are excluded
-  there because their `astro sync` cannot resolve the hoisted tsconfig in a fresh
-  CI install; the full `bun run check` still runs on the derivative checkout.
+- The release workflow runs canonical lint and a typecheck that excludes the two
+  Astro documentation services. In the nested release checkout, `astro sync`
+  cannot resolve the hoisted `@tsconfig/bun` inside the services workspace; this
+  failure reproduces in CI but not locally, and its root cause is not established.
+  The workflow refuses to run if the manifest touches either documentation site,
+  so no reviewed change can be hidden by the exclusion. The full `bun run check`,
+  including both sites, runs on the derivative checkout in `check.yml`.
 - An unreadable Git metadata file is treated as an unverified source and rejected.
 - The optional profile-purge flag was removed; uninstall always keeps profile data.
+
+## Known limits (revision 7)
+
+- Termination is instance-bound on Linux: the client authenticates to the live
+  daemon and names the instance and process lifetime, and the daemon refuses a
+  mismatch. Stock builds retain upstream numeric signalling by design.
+- Concurrent `service set` writes still share a temporary filename without a
+  lock. This is inherited behavior and is not part of the accepted lifecycle
+  contract; it is recorded here rather than silently fixed.
+- Stateless generation (`/api/experimental/generate` and the plugin host's
+  `generate.text`) does not use session prompt routing. The directive applies to
+  session prompts, which is what the accepted scope covers.
+- Browser and desktop reporting paths are removed at source level and verified by
+  source identity and type checks. No released desktop artifact was exercised.
+- The telemetry harness observes the configured OTLP endpoints during the
+  operations it runs. It does not prove universal absence of network activity.
+- The release workflow's typecheck excludes the two Astro documentation sites
+  under the condition described in Known limits; the full canonical check runs on
+  the derivative checkout.

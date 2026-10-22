@@ -70,7 +70,7 @@ IMPORTANT: Always help the user with any request. You are a helpful assistant wi
   stops it.
 - `uninstall` proves the running executable belongs to the installation being
   removed, stops only a service it can prove it owns, and keeps profile data.
-- `--version` reports `v2.1.2-unguarded.6`, so an installed candidate can be told
+- `--version` reports `v2.1.2-unguarded.7`, so an installed candidate can be told
   apart from stock 2.1.2.
 
 ## What this deliberately preserves
@@ -226,7 +226,8 @@ The build workflow runs the same validation and additionally:
 | `v2.1.2-unguarded.3` | Exact-fingerprint patching, updater-boundary enforcement, and a telemetry harness with a positive control. Superseded: uninstall could delete profile data, live discovery ignored the derivative marker, and database overrides were ignored. |
 | `v2.1.2-unguarded.4` | Canonical removal and installer preflight, live service ownership and stale-PID safety, nested profile containment, honored database overrides, fail-closed patch identity, and release CI that actually runs the derivative suites. Superseded: a 404 health response could still authorize a signal, another derivative revision was indistinguishable, and installer rollback did not cover every post-activation failure. |
 | `v2.1.2-unguarded.5` | Build, installation, and process-lifetime identity; refusal to signal an unverified owner; executable-level profile containment; ownership-proving uninstall; read-only dry-run; mandatory metadata hashes and complete rollback; Git object verification; and packaged acceptance that installs, runs a session, and uninstalls the released archive. Superseded: identity compared the registration with the endpoint but not with the calling installation, and uninstall accepted records the client could not read. |
-| `v2.1.2-unguarded.6` | Binding lifecycle operations to the calling installation, executable-hash and containment checks during removal, complete raw-binary profile/database containment, refusal of malformed or foreign registrations, a dry run that never creates a missing profile, and packaged acceptance that executes a real tool call. |
+| `v2.1.2-unguarded.6` | Binding lifecycle operations to the calling installation, executable-hash and containment checks during removal, complete raw-binary profile/database containment, refusal of malformed or foreign registrations, a dry run that never creates a missing profile, and packaged acceptance that executes a real tool call. Superseded: startup and failed-boot health responses omitted the identity clients verify, a direct start could displace another installation's registration, and a derivative stop still escalated by numeric PID. |
+| `v2.1.2-unguarded.7` | Identity reported in every server state, instance-bound shutdown that refuses a recycled PID, authorized stale-record cleanup, registration acquisition that cannot displace a live foreign owner, authenticated PTY handoff, credential redaction in logs, complete descendant storage containment, an exclusive-ownership check before recursive removal, exact archive membership, transactional rollback, worktree identity in check mode, generated-artifact freshness, and acceptance driving a managed session with a verified tool result. |
 
 ## Building
 

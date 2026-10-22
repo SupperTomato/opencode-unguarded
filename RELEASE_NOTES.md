@@ -1,4 +1,4 @@
-# OpenCode Unguarded v2.1.2 (revision 6)
+# OpenCode Unguarded v2.1.2 (revision 7)
 
 Derivative of OpenCode with built-in model-prompt guardrails removed and outbound
 telemetry integrations disabled at build time.
@@ -24,6 +24,30 @@ telemetry integrations disabled at build time.
   destructive commands (the prohibition itself remains).
 - Removes OTLP log/trace exporters, browser Sentry initialization, the desktop
   Sentry startup, and the Sentry build plugin.
+
+## Revision 7 changes
+
+- Identity (distribution, revision, installation, instance, process lifetime) is
+  reported in every server state, including a slow or failed startup, so a
+  polling client never mistakes its own daemon for a foreign one.
+- A derivative service is stopped by an authenticated request naming the exact
+  instance and lifetime. Numeric-PID signalling and escalation remain only for
+  stock builds, so a recycled PID can never receive a stop meant for a dead owner.
+- Stale registrations are removed only by a caller authorized for that record and
+  installation, and are removed through a quarantine rename that cannot delete a
+  concurrently published replacement.
+- A direct service start refuses to overwrite a live foreign registration, and an
+  inherited PTY handoff is authenticated before anything is migrated or stopped.
+- Credential-bearing command arguments are redacted from startup and failure logs.
+- Storage validation covers the default profile, the stock roots in use, dangling
+  links, database sidecars, and application-owned descendant write targets, and
+  saved service environment values cannot reintroduce a rejected override.
+- Removal requires exclusive ownership of every entry under the installation root
+  and verifies the launcher hash.
+- The installer validates the exact archive member set, allocates unique staging
+  and backup paths, and rolls back on interruption as well as ordinary failure.
+- Source verification checks the whole worktree against the pinned commit and runs
+  in check mode; generated OpenAPI and clients are checked for freshness in CI.
 
 ## Lifecycle changes
 
