@@ -14,9 +14,9 @@ presented as runtime proof.
 | Tag | v2.1.2 |
 | Commit | a517687fde98a7329ada3ae644a01a9fc6c4e99e |
 | npm integrity | `sha512-9mBVQTO3WkKzP300NtHuhmXkHTfR2JwFB0AKRGRw4Lt3SNEwo5V4pzXXrwlpRAHoQmINLPuFPGOmn1kxYZdmMQ==` |
-| Derivative revision | 7 |
+| Derivative revision | 8 |
 | Target | linux-x64 |
-| Toolchain | Bun 1.4.2, Node v24.22.0 (release) |
+| Toolchain | Bun 1.4.2, Node v24.22.0 (release .7); see `.8` artifact metadata |
 
 `@opencode/cli@2.1.2` is the current OpenCode distribution line. `opencode-ai@1.19.3`
 is the previous generation; its source layout does not apply here.
@@ -30,6 +30,7 @@ is the previous generation; its source layout does not apply here.
 | `.3` | Exact fingerprints and the updater boundary, but a follow-up review found: uninstall could delete a profile inside the install root; the shell uninstaller used the wrong registration path and could remove another install; live discovery ignored the derivative marker; a stale PID could be signalled; nested profile directories and the default database were unchecked; database overrides were ignored; installer checksums were optional and link validation ran after activation; patch planning created directories before preflight; and release CI named two derivative suites it never copied, running 20 CLI tests instead of 26. Superseded. |
 | `.4` | Canonical removal and installer preflight, but a later review found: a 404 health response still authorized a signal; another derivative revision was indistinguishable; uninstall did not prove the executable belonged to the installation; installer rollback missed some post-activation failures; raw-binary containment was incomplete; dry run wrote files; a synthesized HEAD passed identity checks; and the telemetry harness exercised no session. Superseded. |
 | `.5` | Separate build, installation, and process-lifetime identity. A later review found that service checks never compared the registration with the *calling* installation, uninstall accepted records the client could not read, raw-binary containment was incomplete, and release evidence covered fewer tests than reported. Superseded. |
+| `.7` | Identity in every server state, instance-bound shutdown, authorized stale cleanup, registration acquisition guard, authenticated PTY handoff, log redaction, descendant containment, exclusive-ownership removal, exact archive membership, transactional rollback, worktree identity, generated-artifact freshness, and managed acceptance. A further review found that the startup record still logged raw arguments, installer interruption could delete the live installation, shutdown used a timed process exit rather than the lifecycle, and some validation still ran after writes. Superseded. |
 | `.6` | Bound lifecycle operations to the calling installation. A deeper review found that startup and failed-boot health responses omitted that identity, a direct start could displace a live foreign registration, derivative termination still escalated by numeric PID, saved service environment could reintroduce a rejected override, removal did not verify exclusive ownership, and several runtime edits were absent from the manifest. Superseded. |
 
 Revision 7 closes the `.6` defects. Every intended runtime change is declared in
@@ -242,17 +243,43 @@ identity remained partial, and release evidence was weaker than claimed.
 | Stale generated artifacts | `check:generated` in the release workflow and in CI |
 | Tool result not verified | unpredictable expected value in `model-stub.ts` and both harnesses |
 
-### Published artifact (.7)
+### Revision 8 verification
+
+| Check | Result | Where |
+| --- | --- | --- |
+| Derivative tooling tests | 107 pass / 8 files / 518 assertions | local |
+| Client suites | 256 pass / 23 files / 995 assertions | local |
+| CLI lifecycle suites | 17 pass / 3 files | local |
+| CLI redaction/environment suite | 9 pass | local |
+| Canonical `bun run check` | 34/34 tasks | local |
+| Validation gates on the built binary | 6 passed, 0 failed, 0 blocked | local |
+| Packaged acceptance (downloaded archive) | all checks passed | local |
+| CI check workflow | success | CI |
+| Build and publish workflow | success | CI |
+
+### Revision 8 defect regressions
+
+| Defect | Evidence |
+| --- | --- |
+| Startup log recorded raw arguments | `unguarded-redact.test.ts` runs the real CLI with a sentinel secret; it fails against the `.7` source and passes now |
+| Interruption could delete the live installation | `rollback.test.ts` signals the installer while staging exists; it fails against the `.7` installer and passes now |
+| Shutdown used a timed `process.exit` | Live `.8` binary: shutdown returned 204, finalizers ran, registration removed, port released |
+| Failed startup was not stoppable | Live `.8` binary with an invalid config: `/api/info` reported full identity and shutdown returned 204 |
+| Timeout recovery cleared terminal state before authorization | `effect`/`promise` service recovery now calls `requireVerifiedOwner` first |
+| Saved environment blocked its own repair | `unguarded-redact.test.ts` refuses a saved `OPENCODE_DB`, removes it, and resumes |
+| Archive accepted unexpected directories | `install.test.ts` extra-file and empty-directory cases |
+| Removal accepted missing installation identity | `uninstall.ts` requires it; tampered-metadata acceptance case |
+
+### Published artifact (.8)
 
 | Field | Value |
 | --- | --- |
-| Release | https://github.com/SupperTomato/opencode-unguarded/releases/tag/v2.1.2-unguarded.7 |
-| Release target commit | `1ba97bee12ea61bf366b3fbb307bec10a698657b` |
-| Build/publish run | https://github.com/SupperTomato/opencode-unguarded/actions/runs/39702152836 |
+| Release | https://github.com/SupperTomato/opencode-unguarded/releases/tag/v2.1.2-unguarded.8 |
+| Release target commit | `0bd92998f75e1abf9e4c4943051bdfefe98a8bae` |
+| Build/publish run | https://github.com/SupperTomato/opencode-unguarded/actions/runs/39728658292 |
 | Archive SHA-256 | verified with the published `checksums.sha256` |
-| Executable SHA-256 | `d03904124027cfef17c54975fc0fc91f85b7db01916b48ab294bc96dec335422` |
-| Launcher SHA-256 | `e14a970ac94a9bcc7ac5a191e3b9df49fa413c5d6220259543dce589503060cf` |
-| Manifest SHA-256 | `d3ec58b9a27d3bf7376f5a24f19b5d92105ca01d6aa88d1af66526204ab7542e` |
+| Executable SHA-256 | `98818d59e698c5e9284a1baefd3692d58dd7a21d57ad0f56f6da9d1d346bfe86` |
+| Launcher SHA-256 | `9736d496e6fca08b192f60dd3e9a8ffeac0847017b4775893c7ff036550e33d5` |
 | Toolchain | Bun 1.4.2, Node v24.22.0 |
 
 The downloaded archive was verified against its checksum and extracted. Its
@@ -263,13 +290,13 @@ managed session with a verified tool result, cross-installation refusal, malform
 registration refusal, tampered-metadata refusal, unowned-content refusal, and
 uninstall while the service was running.
 
-### Installed acceptance (revision 7)
+### Installed acceptance (revision 8)
 
 | Check | Result |
 | --- | --- |
-| Installed executable hash | matches the published `d0390412…` |
-| Installed launcher hash | matches the published `e14a970a…` |
-| `--version` | `opencode v2.1.2-unguarded.7` |
+| Installed executable hash | matches the published `98818d59…` |
+| Installed launcher hash | matches the published `9736d496…` |
+| `--version` | `opencode v2.1.2-unguarded.8` |
 | Installation identity preserved across replacement | `150aa94d7e7d30e291c289f13e0b22cd` |
 | Durable profile preserved | `debug paths` resolves inside the existing profile |
 | Service status / start / restart | running service reported, restarted, and alive afterwards |
@@ -329,3 +356,25 @@ uninstall while the service was running.
 - The release workflow's typecheck excludes the two Astro documentation sites
   under the condition described in Known limits; the full canonical check runs on
   the derivative checkout.
+
+## Still open after revision 8
+
+Revision 8 closes the defects it names, but the following remain and are **not**
+claimed as complete:
+
+- Registration publication, stale cleanup, and uninstall still do not share one
+  coordination mechanism. Publication remains a check followed by a rename, and
+  an interrupted cleanup can still restore over a newer record.
+- A direct start from the same installation is still allowed to replace a live
+  registration; competing starts are not serialized.
+- Uninstall verifies an inventory but does not exclude startup of a daemon from
+  the same installation during removal.
+- Live identity does not yet include the upstream source commit or compare the
+  service-instance UUID during discovery.
+- Full worktree identity is optional and runs after patching through the CLI.
+- The installer's rollback is transaction-aware for signals and ordinary
+  failures, but it is not a crash-recovery journal.
+- Concurrent `service set` writes still share a temporary filename.
+- Stateless generation remains outside session prompt routing.
+- The release workflow still uses canonical lint plus a scoped typecheck; the
+  root cause of the nested Astro failure is still not established.
